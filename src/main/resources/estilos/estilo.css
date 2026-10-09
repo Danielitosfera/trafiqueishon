@@ -1,0 +1,42 @@
+.root-view { -fx-background-color: #1E1E2E; }
+
+.panel-control {
+    -fx-background-color: #252536;
+    -fx-tab-min-width: 60px;
+    -fx-tab-max-width: 90px;
+}
+.panel-control .tab-header-area { -fx-background-color: #1E1E2E; }
+.panel-control .tab {
+    -fx-background-color: #252536;
+    -fx-text-base-color: #CDD6F4;
+    -fx-padding: 6 10 6 10;
+}
+.panel-control .tab:selected {
+    -fx-background-color: #313244;
+    -fx-text-base-color: #89B4FA;
+}
+.panel-control .tab-content-area { -fx-background-color: #252536; }
+
+.tab-contenido { -fx-background-color: #252536; }
+.tab-titulo {
+    -fx-text-fill: #89B4FA;
+    -fx-font-size: 15px;
+    -fx-font-weight: bold;
+}
+.tab-descripcion {
+    -fx-text-fill: #A6ADC8;
+    -fx-font-size: 12px;
+}
+
+.status-bar {
+    -fx-background-color: #181825;
+    -fx-border-color: #313244;
+    -fx-border-width: 1 0 0 0;
+}
+.status-item {
+    -fx-text-fill: #CDD6F4;
+    -fx-font-size: 12px;
+    -fx-font-family: "Monospaced";
+}
+
+.label { -fx-text-fill: #CDD6F4; }

@@ -1,0 +1,10 @@
+{
+  "pois": [
+    { "id": "plaza",       "tipo": "mixto",   "peso": 10, "x": -70.133, "y": -15.499 },
+    { "id": "mercado",     "tipo": "destino", "peso": 9,  "x": -70.135, "y": -15.497 },
+    { "id": "terminal",    "tipo": "origen",  "peso": 8,  "x": -70.140, "y": -15.490 },
+    { "id": "hospital",    "tipo": "destino", "peso": 7,  "x": -70.130, "y": -15.495 },
+    { "id": "universidad", "tipo": "destino", "peso": 8,  "x": -70.128, "y": -15.502 },
+    { "id": "industrial",  "tipo": "destino", "peso": 6,  "x": -70.145, "y": -15.505 }
+  ]
+}

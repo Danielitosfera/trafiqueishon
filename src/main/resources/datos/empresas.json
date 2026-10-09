@@ -1,0 +1,7 @@
+{
+  "empresas": [
+    { "id": "emp_01", "nombre": "Transportes Amantani", "flota": 25, "frecuenciaPico": 8,  "frecuenciaValle": 15, "tarifa": 1.50 },
+    { "id": "emp_02", "nombre": "Senor de los Milagros", "flota": 18, "frecuenciaPico": 10, "frecuenciaValle": 20, "tarifa": 1.50 },
+    { "id": "emp_03", "nombre": "Transur", "flota": 30, "frecuenciaPico": 6,  "frecuenciaValle": 12, "tarifa": 2.00 }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "rutas": [
+    { "codigo": "L1", "nombre": "13 Amantani",            "color": "#FF6B6B", "empresaId": "emp_01", "longitudKm": 12.5 },
+    { "codigo": "L2", "nombre": "11 Nuevo Peru",          "color": "#4ECDC4", "empresaId": "emp_01", "longitudKm": 15.2 },
+    { "codigo": "L3", "nombre": "12 Sur Tahuantinsuyo",   "color": "#FFE66D", "empresaId": "emp_02", "longitudKm": 10.8 },
+    { "codigo": "L4", "nombre": "15 Transportes Progreso","color": "#A8E6CF", "empresaId": "emp_03", "longitudKm": 18.3 },
+    { "codigo": "L5", "nombre": "17 Texas Tours",         "color": "#DDA0DD", "empresaId": "emp_03", "longitudKm": 14.0 }
+  ]
+}
