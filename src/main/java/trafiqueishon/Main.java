@@ -12,7 +12,7 @@ public class Main extends Application {
         MainView view = new MainView();
         Scene scene = new Scene(view.getRoot(), 1280, 800);
 
-        var css = getClass().getResource("/styles.css");
+        var css = getClass().getResource("/estilos/estilo.css");
         if (css != null) {
             scene.getStylesheets().add(css.toExternalForm());
         } else {

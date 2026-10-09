@@ -12,11 +12,15 @@ import trafiqueishon.geo.GeoJsonParser;
 import trafiqueishon.geo.Proyector;
 import trafiqueishon.geo.Via;
 
+
+import trafiqueishon.geo.Nodo;
+import trafiqueishon.geo.Edge;
+import trafiqueishon.geo.Pathfinder;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
+import trafiqueishon.geo.GrafoVial;
 /**
  * Canvas del mapa OPTIMIZADO.
  *
@@ -38,6 +42,9 @@ public class MapaCanvas extends Pane {
     private final java.util.Set<String> tiposDisponibles = new java.util.TreeSet<>();
     private List<Via> vias;
     private boolean cargado = false;
+
+    private GrafoVial grafo;        // <-- NUEVO
+
 
     // Estado de vista
     private double offsetX = 0, offsetY = 0;
@@ -122,20 +129,45 @@ public class MapaCanvas extends Pane {
                 List<Via> cargadas = parser.parsearDesdeRecurso("/mapas/juliaca.geojson");
                 proyector.preProyectar(cargadas);
 
+                // === FASE 3: construir grafo ANTES de liberar coords ===
+                GrafoVial g = new GrafoVial();
+                g.construir(cargadas, proyector);
+                System.out.println("[Grafo] " + g.resumen());
+
+                // Ahora sí, liberar coords para ahorrar memoria
+                for (Via v : cargadas) v.liberarCoords();
+
                 Platform.runLater(() -> {
                     vias = cargadas;
+                    grafo = g;
                     cargado = true;
-                    recolectarTipos();      // <-- AGREGA ESTO
+                    recolectarTipos();
                     recalcularEscalaBase();
                     resetVista();
                     System.out.println("[MapaCanvas] Vias cargadas: " + vias.size());
                     System.out.println("[MapaCanvas] Tipos: " + tiposDisponibles);
+                    // --- TEST A* ---
+                    Pathfinder pf = new Pathfinder(g);
+                    Nodo a = g.nodoMasCercanoLonLat(-70.133, -15.499);  // Plaza de Armas
+                    Nodo b = g.nodoMasCercanoLonLat(-70.128, -15.502);  // Universidad
+                    if (a != null && b != null) {
+                        List<Edge> ruta = pf.ruta(a, b);
+                        if (ruta != null) {
+                            double totalSeg = 0;
+                            for (Edge e : ruta) totalSeg += e.costoBase;
+                            System.out.println("[A*] Ruta: " + ruta.size()
+                                    + " edges, " + String.format("%.1f", totalSeg) + " s");
+                        } else {
+                            System.out.println("[A*] Sin ruta");
+                        }
+                    }
                 });
             } catch (Exception ex) {
                 System.err.println("[MapaCanvas] Error: " + ex.getMessage());
                 ex.printStackTrace();
             }
         }, "cargador-geojson").start();
+
     }
 
     private void recalcularEscalaBase() {
@@ -332,10 +364,7 @@ public class MapaCanvas extends Pane {
         redibujar();
     }
 
-    /** Getter de tipos de via disponibles. */
-    public java.util.Set<String> getTiposDisponibles() {
-        return tiposDisponibles;
-    }
+
 
     private void aplicarNivelZoom(int nuevoNivel, double cx, double cy) {
         double nuevoZoom = ZOOMS[nuevoNivel];
@@ -395,15 +424,20 @@ public class MapaCanvas extends Pane {
         return count;
     }
 
-    /** Callback opcional para que MainView actualice la status bar al mover el mouse. */
+    // ==================== CALLBACK MOUSE (status bar) ====================
+
+    /**
+     * Callback para que MainView actualice la status bar al mover el mouse.
+     * Usa addEventFilter para NO pisar el setOnMouseDragged del pan.
+     */
     public void setOnMouseMoveCallback(java.util.function.Consumer<double[]> cb) {
-        this.setOnMouseMoved(e -> {
+        addEventFilter(javafx.scene.input.MouseEvent.MOUSE_MOVED, e -> {
             if (!cargado) return;
             double[] norm = pantallaANormalizado(e.getX(), e.getY());
             double[] lonlat = normalizadoALonLat(norm[0], norm[1]);
             cb.accept(lonlat);
         });
-        this.setOnMouseDragged(e -> {
+        addEventFilter(javafx.scene.input.MouseEvent.MOUSE_DRAGGED, e -> {
             if (!cargado) return;
             double[] norm = pantallaANormalizado(e.getX(), e.getY());
             double[] lonlat = normalizadoALonLat(norm[0], norm[1]);
@@ -424,4 +458,8 @@ public class MapaCanvas extends Pane {
 
     /** Tipos que aparecen realmente en el mapa. */
     public java.util.Set<String> getTiposDisponibles() { return tiposDisponibles; }
+
+    /** Grafo vial construido a partir de las vias. */
+    public GrafoVial getGrafo() { return grafo; }
+
 }

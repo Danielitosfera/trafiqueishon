@@ -63,7 +63,11 @@ public class Proyector {
             v.minX = minX; v.maxX = maxX;
             v.minY = minY; v.maxY = maxY;
 
-            v.liberarCoords();
+            // ANTES:
+            //v.liberarCoords();
+
+// DESPUÉS:
+//v.liberarCoords();  // Se libera tras construir el grafo (Fase 3)
         }
     }
 
