@@ -33,6 +33,9 @@ public class MapaCanvas extends Pane {
     private final GeoJsonParser parser = new GeoJsonParser();
     private final Proyector proyector = new Proyector();
 
+    // Tipos de via ocultos (filtros)
+    private final java.util.Set<String> tiposOcultos = new java.util.HashSet<>();
+    private final java.util.Set<String> tiposDisponibles = new java.util.TreeSet<>();
     private List<Via> vias;
     private boolean cargado = false;
 
@@ -122,9 +125,11 @@ public class MapaCanvas extends Pane {
                 Platform.runLater(() -> {
                     vias = cargadas;
                     cargado = true;
+                    recolectarTipos();      // <-- AGREGA ESTO
                     recalcularEscalaBase();
                     resetVista();
                     System.out.println("[MapaCanvas] Vias cargadas: " + vias.size());
+                    System.out.println("[MapaCanvas] Tipos: " + tiposDisponibles);
                 });
             } catch (Exception ex) {
                 System.err.println("[MapaCanvas] Error: " + ex.getMessage());
@@ -207,6 +212,9 @@ public class MapaCanvas extends Pane {
             if (v.projX == null || v.projX.length < 2) continue;
             if (secundarias != esSecundaria(v.highway)) continue;
 
+            // NUEVO: filtro por tipo oculto
+            if (tiposOcultos.contains(v.highway)) continue;
+
             // Culling
             if (v.maxX < vpMinX || v.minX > vpMaxX) continue;
             if (v.maxY < vpMinY || v.minY > vpMaxY) continue;
@@ -214,6 +222,7 @@ public class MapaCanvas extends Pane {
             Color c = colorPorTipo(v.highway);
             porColor.computeIfAbsent(c, k -> new ArrayList<>()).add(v);
         }
+
 
         // Un stroke por color
         for (Map.Entry<Color, List<Via>> e : porColor.entrySet()) {
@@ -268,4 +277,151 @@ public class MapaCanvas extends Pane {
             redibujar();
         }
     }
+    // ==================== CONTROLES PUBLICOS ====================
+
+    /** Zoom in por pasos discretos. */
+    public void zoomIn() {
+        if (!cargado) return;
+        int nuevoNivel = Math.min(nivelZoom + 1, ZOOMS.length - 1);
+        if (nuevoNivel == nivelZoom) return;
+        aplicarNivelZoom(nuevoNivel, canvas.getWidth() / 2.0, canvas.getHeight() / 2.0);
+    }
+
+    /** Zoom out por pasos discretos. */
+    public void zoomOut() {
+        if (!cargado) return;
+        int nuevoNivel = Math.max(nivelZoom - 1, 0);
+        if (nuevoNivel == nivelZoom) return;
+        aplicarNivelZoom(nuevoNivel, canvas.getWidth() / 2.0, canvas.getHeight() / 2.0);
+    }
+
+    /** Reset completo de la vista. */
+    public void resetVistaPublico() {
+        resetVista();
+    }
+
+    /** Centra el mapa en coordenadas geograficas dadas. */
+    public void centrarEn(double lon, double lat, double zoomDeseado) {
+        if (!cargado) return;
+        // Convertir lon/lat a coords normalizadas 0..1
+        double nx = (lon - proyector.getMinLon()) / proyector.getAnchoGeo();
+        double ny = (proyector.getMaxLat() - lat) / proyector.getAltoGeo();
+        // Ajustar zoom al nivel mas cercano
+        int mejorNivel = nivelZoom;
+        double mejorDif = Double.MAX_VALUE;
+        for (int i = 0; i < ZOOMS.length; i++) {
+            double dif = Math.abs(ZOOMS[i] - zoomDeseado);
+            if (dif < mejorDif) { mejorDif = dif; mejorNivel = i; }
+        }
+        zoom = ZOOMS[mejorNivel];
+        nivelZoom = mejorNivel;
+
+        double escalaActual = escalaBase * zoom;
+        offsetX = canvas.getWidth()  / 2.0 - nx * escalaActual;
+        offsetY = canvas.getHeight() / 2.0 - ny * escalaActual;
+
+        necesitaRedibujar = true;
+        redibujar();
+    }
+
+    /** Cambia visibilidad de un tipo de via. */
+    public void setTipoVisible(String tipo, boolean visible) {
+        if (visible) tiposOcultos.remove(tipo);
+        else tiposOcultos.add(tipo);
+        necesitaRedibujar = true;
+        redibujar();
+    }
+
+    /** Getter de tipos de via disponibles. */
+    public java.util.Set<String> getTiposDisponibles() {
+        return tiposDisponibles;
+    }
+
+    private void aplicarNivelZoom(int nuevoNivel, double cx, double cy) {
+        double nuevoZoom = ZOOMS[nuevoNivel];
+        offsetX = cx - (cx - offsetX) * (nuevoZoom / zoom);
+        offsetY = cy - (cy - offsetY) * (nuevoZoom / zoom);
+        zoom = nuevoZoom;
+        nivelZoom = nuevoNivel;
+        necesitaRedibujar = true;
+        redibujar();
+    }
+
+    // ==================== ESTADO PARA STATUS BAR ====================
+
+    /** Convierte coordenadas de pantalla a normalizadas 0..1. */
+    public double[] pantallaANormalizado(double px, double py) {
+        double escalaActual = escalaBase * zoom;
+        double nx = (px - offsetX) / escalaActual;
+        double ny = (py - offsetY) / escalaActual;
+        return new double[]{nx, ny};
+    }
+
+    /** Convierte normalizado 0..1 a lon/lat usando el proyector. */
+    public double[] normalizadoALonLat(double nx, double ny) {
+        double lon = proyector.getMinLon() + nx * proyector.getAnchoGeo();
+        double lat = proyector.getMaxLat() - ny * proyector.getAltoGeo();
+        return new double[]{lon, lat};
+    }
+
+    /** Zoom actual. */
+    public double getZoom() { return zoom; }
+
+    /** Numero total de vias cargadas. */
+    public int getTotalVias() { return vias == null ? 0 : vias.size(); }
+
+    /**
+     * Cuenta vias visibles en el viewport actual (aplicando filtros).
+     */
+    public int getViasVisibles() {
+        if (vias == null) return 0;
+        double w = canvas.getWidth();
+        double h = canvas.getHeight();
+        double escalaActual = escalaBase * zoom;
+        double vpMinX = (0 - offsetX) / escalaActual - 0.02;
+        double vpMaxX = (w - offsetX) / escalaActual + 0.02;
+        double vpMinY = (0 - offsetY) / escalaActual - 0.02;
+        double vpMaxY = (h - offsetY) / escalaActual + 0.02;
+
+        int count = 0;
+        for (Via v : vias) {
+            if (v.highway == null) continue;
+            if (v.projX == null || v.projX.length < 2) continue;
+            if (tiposOcultos.contains(v.highway)) continue;
+            if (v.maxX < vpMinX || v.minX > vpMaxX) continue;
+            if (v.maxY < vpMinY || v.minY > vpMaxY) continue;
+            count++;
+        }
+        return count;
+    }
+
+    /** Callback opcional para que MainView actualice la status bar al mover el mouse. */
+    public void setOnMouseMoveCallback(java.util.function.Consumer<double[]> cb) {
+        this.setOnMouseMoved(e -> {
+            if (!cargado) return;
+            double[] norm = pantallaANormalizado(e.getX(), e.getY());
+            double[] lonlat = normalizadoALonLat(norm[0], norm[1]);
+            cb.accept(lonlat);
+        });
+        this.setOnMouseDragged(e -> {
+            if (!cargado) return;
+            double[] norm = pantallaANormalizado(e.getX(), e.getY());
+            double[] lonlat = normalizadoALonLat(norm[0], norm[1]);
+            cb.accept(lonlat);
+        });
+    }
+
+// ==================== TIPOS DISPONIBLES ====================
+
+    /** Llena tiposDisponibles; llamar tras cargar. */
+    private void recolectarTipos() {
+        tiposDisponibles.clear();
+        if (vias == null) return;
+        for (Via v : vias) {
+            if (v.highway != null) tiposDisponibles.add(v.highway);
+        }
+    }
+
+    /** Tipos que aparecen realmente en el mapa. */
+    public java.util.Set<String> getTiposDisponibles() { return tiposDisponibles; }
 }

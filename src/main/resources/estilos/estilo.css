@@ -39,4 +39,211 @@
     -fx-font-family: "Monospaced";
 }
 
+/* ============================================================
+   Fase 2 - Controles del panel
+   ============================================================ */
+
+.tab-contenido {
+    -fx-background-color: #252536;
+}
+
+.tab-titulo {
+    -fx-text-fill: #89B4FA;
+    -fx-font-size: 13px;
+    -fx-font-weight: bold;
+    -fx-padding: 4 0 4 0;
+}
+
+.tab-descripcion {
+    -fx-text-fill: #A6ADC8;
+    -fx-font-size: 12px;
+}
+
+.scroll-panel {
+    -fx-background-color: #252536;
+    -fx-background: #252536;
+    -fx-border-color: transparent;
+}
+
+.scroll-panel .viewport {
+    -fx-background-color: #252536;
+}
+
+.checkbox-tipo {
+    -fx-text-fill: #CDD6F4;
+    -fx-font-size: 12px;
+}
+
+.checkbox-tipo .box {
+    -fx-background-color: #313244;
+    -fx-border-color: #45475A;
+    -fx-border-radius: 3;
+}
+
+.checkbox-tipo:selected .mark {
+    -fx-background-color: #89B4FA;
+}
+
+.leyenda-texto {
+    -fx-text-fill: #CDD6F4;
+    -fx-font-size: 12px;
+}
+
+.separator .line {
+    -fx-border-color: #313244;
+    -fx-border-width: 1 0 0 0;
+}
+
+.button {
+    -fx-background-color: #313244;
+    -fx-text-fill: #CDD6F4;
+    -fx-background-radius: 6;
+    -fx-padding: 6 12 6 12;
+    -fx-cursor: hand;
+    -fx-font-size: 12px;
+}
+
+.button:hover {
+    -fx-background-color: #45475A;
+}
+
+.button:pressed {
+    -fx-background-color: #89B4FA;
+    -fx-text-fill: #1E1E2E;
+}
+
+/* ============================================================
+   TRAFIQUEISHON - Tema oscuro (Catppuccin Mocha)
+   ============================================================ */
+
+.root-view {
+    -fx-background-color: #1E1E2E;
+}
+
+/* ---------- Panel de control (derecha) ---------- */
+.panel-control {
+    -fx-background-color: #252536;
+    -fx-tab-min-width: 60px;
+    -fx-tab-max-width: 90px;
+}
+
+.panel-control .tab-header-area {
+    -fx-background-color: #1E1E2E;
+}
+
+.panel-control .tab-header-background {
+    -fx-background-color: #1E1E2E;
+}
+
+.panel-control .tab {
+    -fx-background-color: #252536;
+    -fx-text-base-color: #CDD6F4;
+    -fx-padding: 6 10 6 10;
+}
+
+.panel-control .tab:selected {
+    -fx-background-color: #313244;
+    -fx-text-base-color: #89B4FA;
+}
+
+.panel-control .tab-content-area {
+    -fx-background-color: #252536;
+}
+
+/* ---------- Pestañas de contenido ---------- */
+.tab-contenido {
+    -fx-background-color: #252536;
+}
+
+.tab-titulo {
+    -fx-text-fill: #89B4FA;
+    -fx-font-size: 13px;
+    -fx-font-weight: bold;
+    -fx-padding: 4 0 4 0;
+}
+
+.tab-descripcion {
+    -fx-text-fill: #A6ADC8;
+    -fx-font-size: 12px;
+}
+
+/* ---------- ScrollPane ---------- */
+.scroll-panel {
+    -fx-background-color: #252536;
+    -fx-background: #252536;
+    -fx-border-color: transparent;
+}
+
+.scroll-panel .viewport {
+    -fx-background-color: #252536;
+}
+
+.scroll-panel > .corner {
+    -fx-background-color: #252536;
+}
+
+/* ---------- Checkboxes de filtros ---------- */
+.checkbox-tipo {
+    -fx-text-fill: #CDD6F4;
+    -fx-font-size: 12px;
+}
+
+.checkbox-tipo .box {
+    -fx-background-color: #313244;
+    -fx-border-color: #45475A;
+    -fx-border-radius: 3;
+}
+
+.checkbox-tipo:selected .mark {
+    -fx-background-color: #89B4FA;
+}
+
+/* ---------- Leyenda ---------- */
+.leyenda-texto {
+    -fx-text-fill: #CDD6F4;
+    -fx-font-size: 12px;
+}
+
+/* ---------- Separadores ---------- */
+.separator .line {
+    -fx-border-color: #313244;
+    -fx-border-width: 1 0 0 0;
+}
+
+/* ---------- Botones ---------- */
+.button {
+    -fx-background-color: #313244;
+    -fx-text-fill: #CDD6F4;
+    -fx-background-radius: 6;
+    -fx-padding: 6 12 6 12;
+    -fx-cursor: hand;
+    -fx-font-size: 12px;
+}
+
+.button:hover {
+    -fx-background-color: #45475A;
+}
+
+.button:pressed {
+    -fx-background-color: #89B4FA;
+    -fx-text-fill: #1E1E2E;
+}
+
+/* ---------- Labels generales ---------- */
+.label {
+    -fx-text-fill: #CDD6F4;
+}
+
+/* ---------- Status bar (abajo) ---------- */
+.status-bar {
+    -fx-background-color: #181825;
+    -fx-border-color: #313244;
+    -fx-border-width: 1 0 0 0;
+}
+
+.status-item {
+    -fx-text-fill: #CDD6F4;
+    -fx-font-size: 12px;
+    -fx-font-family: "Monospaced";
+}
 .label { -fx-text-fill: #CDD6F4; }
