@@ -1,0 +1,13 @@
+{
+  "pois": [
+    { "id": "plaza",       "nombre": "Plaza de Armas",       "tipo": "mixto",   "peso": 10, "x": -70.133, "y": -15.499 },
+    { "id": "mercado",     "nombre": "Mercado",              "tipo": "destino", "peso": 9,  "x": -70.135, "y": -15.497 },
+    { "id": "terminal",    "nombre": "Terminal terrestre",   "tipo": "origen",  "peso": 8,  "x": -70.140, "y": -15.490 },
+    { "id": "hospital",    "nombre": "Hospital",             "tipo": "destino", "peso": 7,  "x": -70.130, "y": -15.495 },
+    { "id": "universidad", "nombre": "Universidad",          "tipo": "destino", "peso": 8,  "x": -70.128, "y": -15.502 },
+    { "id": "industrial",  "nombre": "Zona industrial",      "tipo": "destino", "peso": 6,  "x": -70.145, "y": -15.505 },
+    { "id": "salida_cusco",   "nombre": "Salida Cusco",   "tipo": "origen", "peso": 6, "x": -70.164, "y": -15.499 },
+    { "id": "salida_puno",    "nombre": "Salida Puno",    "tipo": "origen", "peso": 7, "x": -70.133, "y": -15.526 },
+    { "id": "salida_huancane", "nombre": "Salida Huancane", "tipo": "origen", "peso": 5, "x": -70.133, "y": -15.465 }
+  ]
+}
