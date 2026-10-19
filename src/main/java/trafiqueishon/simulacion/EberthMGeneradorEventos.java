@@ -1,0 +1,138 @@
+package trafiqueishon.simulacion;
+
+import trafiqueishon.geo.PieroGEdge;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.random.RandomGenerator;
+
+/**
+ * Genera eventos de tráfico de forma orgánica, una vez por minuto simulado, según los
+ * {@link EberthMParametrosCiudad}. Los eventos caen en el punto medio de una vía
+ * {@code primary} o {@code secondary} elegida al azar y caducan solos.
+ * No es seguro entre hilos: lo usa únicamente el hilo del motor.
+ */
+public final class EberthMGeneradorEventos {
+
+    /** Probabilidad por minuto simulado de que aparezca una trancadera fuera de hora punta. */
+    public static final double PROB_TRANCADERA_BASE = 0.02;
+    /** En hora punta la probabilidad sube un 200 % (se triplica). */
+    public static final double AUMENTO_HORA_PUNTA = 2.0;
+    /** Probabilidad de accidente por minuto según la tasa de accidentes de la ciudad. */
+    public static final double PROB_ACCIDENTE_BAJA = 0.003;
+    public static final double PROB_ACCIDENTE_MEDIA = 0.008;
+    public static final double PROB_ACCIDENTE_ALTA = 0.02;
+    /** Fracción de la probabilidad de lluvia de la ciudad que se juega cada minuto. */
+    public static final double FACTOR_LLUVIA_POR_MINUTO = 0.05;
+
+    public static final int MAX_TRANCADERAS = 6;
+    public static final int MAX_ACCIDENTES = 3;
+    public static final int MAX_LLUVIAS = 2;
+
+    private static final double RADIO_LLUVIA_MIN = 500;
+    private static final double RADIO_LLUVIA_MAX = 2_000;
+
+    private record Activo(EberthMEventoTrafico evento, int expiraMinuto) {}
+
+    private final RandomGenerator azar;
+    private final List<PieroGEdge> vias = new ArrayList<>();
+    private final List<Activo> activos = new ArrayList<>();
+    private int contador;
+
+    public EberthMGeneradorEventos(RandomGenerator azar) {
+        this.azar = azar;
+    }
+
+    /** Vías candidatas: solo {@code primary} y {@code secondary}; sin ellas, cualquier vía de la red. */
+    public void setVias(List<PieroGEdge> edges) {
+        vias.clear();
+        for (PieroGEdge e : edges) {
+            if (esPrincipal(e.highway)) vias.add(e);
+        }
+        if (vias.isEmpty()) vias.addAll(edges);
+    }
+
+    private static boolean esPrincipal(String highway) {
+        return highway != null && (highway.startsWith("primary") || highway.startsWith("secondary"));
+    }
+
+    public void reiniciar() {
+        activos.clear();
+        contador = 0;
+    }
+
+    public static double probabilidadTrancadera(boolean horaPunta) {
+        return PROB_TRANCADERA_BASE * (horaPunta ? 1 + AUMENTO_HORA_PUNTA : 1);
+    }
+
+    public static double probabilidadAccidente(EberthMParametrosCiudad.TasaAccidentes tasa,
+                                               EberthMTipoDia dia) {
+        return Math.min(1, probabilidadAccidente(tasa) * dia.factorAccidentes());
+    }
+
+    public static double probabilidadAccidente(EberthMParametrosCiudad.TasaAccidentes tasa) {
+        return switch (tasa) {
+            case ALTA -> PROB_ACCIDENTE_ALTA;
+            case MEDIA -> PROB_ACCIDENTE_MEDIA;
+            case BAJA -> PROB_ACCIDENTE_BAJA;
+        };
+    }
+
+    public static double probabilidadLluvia(double porcentajeCiudad) {
+        return porcentajeCiudad / 100.0 * FACTOR_LLUVIA_POR_MINUTO;
+    }
+
+    /** Eventos generados cuya duración terminó en {@code minuto}; dejan de estar activos. */
+    public List<EberthMEventoTrafico> expirados(int minuto) {
+        List<EberthMEventoTrafico> fuera = new ArrayList<>();
+        activos.removeIf(a -> {
+            if (a.expiraMinuto() > minuto) return false;
+            fuera.add(a.evento());
+            return true;
+        });
+        return fuera;
+    }
+
+    /** Sortea los eventos de un minuto simulado. */
+    public List<EberthMEventoTrafico> generar(int minuto, boolean horaPunta,
+                                              EberthMParametrosCiudad ciudad) {
+        return generar(minuto, horaPunta, ciudad, EberthMTipoDia.LABORAL);
+    }
+
+    public List<EberthMEventoTrafico> generar(int minuto, boolean horaPunta,
+                                              EberthMParametrosCiudad ciudad, EberthMTipoDia dia) {
+        List<EberthMEventoTrafico> nuevos = new ArrayList<>();
+        if (vias.isEmpty()) return nuevos;
+        if (cuantos(EberthMTipoEvento.TRANCADERA) < MAX_TRANCADERAS
+                && azar.nextDouble() < probabilidadTrancadera(horaPunta)) {
+            nuevos.add(crear(EberthMTipoEvento.TRANCADERA, minuto, 10 + azar.nextInt(16), 0));
+        }
+        if (cuantos(EberthMTipoEvento.ACCIDENTE) < MAX_ACCIDENTES
+                && azar.nextDouble() < probabilidadAccidente(ciudad.getTasaAccidentes(), dia)) {
+            nuevos.add(crear(EberthMTipoEvento.ACCIDENTE, minuto, 8 + azar.nextInt(13), 0));
+        }
+        if (cuantos(EberthMTipoEvento.LLUVIA) < MAX_LLUVIAS
+                && azar.nextDouble() < probabilidadLluvia(ciudad.getProbabilidadLluvia())) {
+            double radio = RADIO_LLUVIA_MIN + azar.nextDouble() * (RADIO_LLUVIA_MAX - RADIO_LLUVIA_MIN);
+            nuevos.add(crear(EberthMTipoEvento.LLUVIA, minuto, 15 + azar.nextInt(26), radio));
+        }
+        return nuevos;
+    }
+
+    private int cuantos(EberthMTipoEvento tipo) {
+        int n = 0;
+        for (Activo a : activos) if (a.evento().tipo() == tipo) n++;
+        return n;
+    }
+
+    private EberthMEventoTrafico crear(EberthMTipoEvento tipo, int minuto, int duracion, double radio) {
+        PieroGEdge via = vias.get(azar.nextInt(vias.size()));
+        double lon = (via.origen.lon + via.destino.lon) / 2;
+        double lat = (via.origen.lat + via.destino.lat) / 2;
+        String nombre = tipo + " automática " + (++contador)
+                + (via.name != null && !via.name.isBlank() ? " · " + via.name : "");
+        EberthMEventoTrafico evento = new EberthMEventoTrafico(nombre, tipo, lon, lat, radio);
+        activos.add(new Activo(evento, minuto + duracion));
+        return evento;
+    }
+}

@@ -1,6 +1,13 @@
+/* ===================================================================
+   Jerarquía tipográfica
+     · Títulos de sección ........ 16px bold  (.seccion > .title, .titulo-app)
+     · Subtítulos ................ 14px bold  (.subtitulo)
+     · Botones y texto base ...... 14px       (.root-view)
+     · Secundario / coordenadas .. 12px       (.texto-secundario, .status-item)
+   =================================================================== */
 .root-view {
     -fx-font-family: "System";
-    -fx-font-size: 12px;
+    -fx-font-size: 14px;
 }
 
 .theme-dark {
@@ -52,7 +59,7 @@
 
 .theme-dark .label, .theme-dark .check-box, .theme-dark .radio-button,
 .theme-dark .tab .tab-label, .theme-dark .status-item {
-    -fx-text-fill: #CDD6F4;
+    -fx-text-fill: #E6EAF5;
 }
 
 .theme-light .label, .theme-light .check-box, .theme-light .radio-button,
@@ -60,15 +67,29 @@
     -fx-text-fill: #263249;
 }
 
-.tab-titulo {
-    -fx-font-size: 13px;
+.titulo-app {
+    -fx-font-size: 16px;
     -fx-font-weight: bold;
 }
 
-.theme-dark .tab-titulo { -fx-text-fill: #89B4FA; }
-.theme-light .tab-titulo { -fx-text-fill: #3267B2; }
-.status-item { -fx-font-size: 11px; }
-.micro-recorrido { -fx-font-size: 10px; }
+.subtitulo {
+    -fx-font-size: 14px;
+    -fx-font-weight: bold;
+    -fx-padding: 2 0 0 0;
+}
+
+.texto-secundario, .status-item, .micro-recorrido { -fx-font-size: 12px; }
+.reloj { -fx-font-size: 14px; -fx-font-weight: bold; }
+
+.theme-dark .titulo-app, .theme-dark .subtitulo { -fx-text-fill: #A9C7FF; }
+.theme-light .titulo-app, .theme-light .subtitulo { -fx-text-fill: #24589E; }
+/* Contraste AA sobre los fondos del panel (#181A27 oscuro / #FFFFFF claro). */
+.theme-dark .texto-secundario { -fx-text-fill: #AEB6CF; }
+.theme-light .texto-secundario { -fx-text-fill: #4A5568; }
+.micro-nombre { -fx-font-weight: bold; }
+
+.button, .toggle-button { -fx-font-size: 14px; -fx-padding: 6 12 6 12; }
+.boton-compacto { -fx-font-size: 13px; -fx-padding: 4 8 4 8; -fx-min-width: 30px; }
 
 .theme-dark .button, .theme-dark .toggle-button {
     -fx-background-color: #34384D;
@@ -119,9 +140,6 @@
 .theme-light .tab { -fx-background-color: #EDF1F7; }
 .theme-dark .tab:selected { -fx-background-color: #34384D; }
 .theme-light .tab:selected { -fx-background-color: #DCE8F7; }
-.panel-lateral .tab { -fx-padding: 6 8 6 8; -fx-font-size: 11px; }
-.theme-dark .panel-lateral .tab:selected .tab-label { -fx-text-fill: #89B4FA; }
-.theme-light .panel-lateral .tab:selected .tab-label { -fx-text-fill: #3267B2; }
 
 .theme-dark .text-field, .theme-dark .text-area, .theme-dark .combo-box,
 .theme-dark .date-picker, .theme-dark .color-picker, .theme-dark .spinner {
@@ -176,6 +194,45 @@
 .theme-light .titled-pane > .title { -fx-background-color: #EDF1F7; }
 .theme-dark .titled-pane > .title > .text { -fx-fill: #CDD6F4; }
 .theme-light .titled-pane > .title > .text { -fx-fill: #263249; }
+
+/* ----- Accordion del panel lateral ----- */
+.seccion > .title {
+    -fx-font-size: 16px;
+    -fx-font-weight: bold;
+    -fx-padding: 10 12 10 12;
+}
+.theme-dark .seccion > .title { -fx-background-color: #1F2233; -fx-border-color: #34384D; -fx-border-width: 0 0 1 0; }
+.theme-light .seccion > .title { -fx-background-color: #F1F5FB; -fx-border-color: #DCE3ED; -fx-border-width: 0 0 1 0; }
+.theme-dark .seccion:expanded > .title { -fx-background-color: #2B3048; }
+.theme-light .seccion:expanded > .title { -fx-background-color: #DCE8F7; }
+.theme-dark .seccion > .title > .text { -fx-fill: #E6EAF5; }
+.theme-light .seccion > .title > .text { -fx-fill: #1C2638; }
+.theme-dark .seccion:expanded > .title > .text { -fx-fill: #A9C7FF; }
+.theme-light .seccion:expanded > .title > .text { -fx-fill: #24589E; }
+.theme-dark .seccion > .title > .arrow-button > .arrow { -fx-background-color: #A9C7FF; }
+.theme-light .seccion > .title > .arrow-button > .arrow { -fx-background-color: #24589E; }
+.contenido-seccion { -fx-spacing: 10; }
+
+/* Filas de micros con checkbox */
+.fila-micro { -fx-padding: 8; -fx-background-radius: 8; -fx-border-radius: 8; -fx-border-width: 1; }
+.theme-dark .fila-micro { -fx-background-color: #20233A; -fx-border-color: #34384D; }
+.theme-light .fila-micro { -fx-background-color: #F7F9FC; -fx-border-color: #DCE3ED; }
+.theme-dark .fila-micro-activa { -fx-border-color: #A9C7FF; -fx-border-width: 2; }
+.theme-light .fila-micro-activa { -fx-border-color: #24589E; -fx-border-width: 2; }
+.muestra-color {
+    -fx-min-width: 22px; -fx-min-height: 8px; -fx-max-width: 22px; -fx-max-height: 8px;
+    -fx-background-radius: 4;
+}
+.muestra-punto {
+    -fx-min-width: 12px; -fx-min-height: 12px; -fx-max-width: 12px; -fx-max-height: 12px;
+    -fx-background-radius: 6;
+}
+.theme-dark .toggle-destacado:selected { -fx-background-color: #2E5AAC; -fx-text-fill: white; }
+.theme-light .toggle-destacado:selected { -fx-background-color: #24589E; -fx-text-fill: white; }
+.theme-dark .boton-primario { -fx-background-color: #2E5AAC; -fx-text-fill: white; }
+.theme-light .boton-primario { -fx-background-color: #24589E; -fx-text-fill: white; }
+.theme-dark .boton-primario:hover { -fx-background-color: #3A6BC4; }
+.theme-light .boton-primario:hover { -fx-background-color: #2F6BBE; }
 .theme-dark .titled-pane > .content { -fx-background-color: #181A27; -fx-border-color: #34384D; }
 .theme-light .titled-pane > .content { -fx-background-color: #FFFFFF; -fx-border-color: #DCE3ED; }
 
@@ -214,3 +271,14 @@
 }
 
 .boton-flotante:hover { -fx-background-color: #B83A4B; }
+
+/* Acción principal de un panel: naranja brillante en ambos temas. */
+.boton-destacado { -fx-background-color: #FF8A00; -fx-text-fill: white; -fx-font-size: 15px;
+    -fx-font-weight: bold; -fx-background-radius: 8; }
+.theme-dark .boton-destacado, .theme-light .boton-destacado { -fx-background-color: #FF8A00; -fx-text-fill: white; }
+.theme-dark .boton-destacado:hover, .theme-light .boton-destacado:hover { -fx-background-color: #FFA033; }
+.theme-dark .boton-destacado:pressed, .theme-light .boton-destacado:pressed { -fx-background-color: #E07800; }
+
+.boton-evento { -fx-font-size: 13px; -fx-font-weight: bold; }
+.theme-dark .boton-evento:selected { -fx-background-color: #C2410C; -fx-text-fill: white; }
+.theme-light .boton-evento:selected { -fx-background-color: #EA580C; -fx-text-fill: white; }

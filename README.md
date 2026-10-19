@@ -1,7 +1,8 @@
 # Trafiqueishon — generador y simulador de rutas
 
-Aplicación de escritorio JavaFX para visualizar las vías de Juliaca, editar
-ubicaciones, definir rutas de micros y simular sus salidas programadas.
+Aplicación de escritorio JavaFX para visualizar la red vial de **Juliaca, Puno o
+Lima**, editar puntos de interés, definir rutas de micros, simular sus salidas
+programadas con eventos de tráfico y exportar las rutas en PDF estilo croquis.
 
 ## Ejecutar
 
@@ -9,107 +10,127 @@ Requiere Java 21 y Maven:
 
 ```sh
 mvn test
-mvn javafx:run
+mvn javafx:run                  # Juliaca / Puno (768 MiB de heap)
+mvn javafx:run -Dapp.xmx=2g     # Lima u otros mapas masivos
 ```
 
-La ejecución JavaFX queda limitada a 768 MiB de heap (`-Xmx768m`) para dejar
-memoria disponible al sistema en equipos con 2 GiB de RAM. El mapa GeoJSON se
-lee por feature y las coordenadas gráficas se almacenan como `float`, reduciendo
-el uso de memoria de la geometría proyectada. La ventana usa un tamaño inicial
-de 1200×760; el mapa se limita a 24 FPS normalmente y 15 FPS cuando la flota
-supera las 1.000 unidades. Con más de 1.000 vehículos visibles, los sprites se
-agrupan a zoom bajo para reducir el trabajo de dibujo. Las calles y sus nombres
-se dibujan en una capa estática reutilizable, en lugar de recalcularla en cada
-fotograma. JavaFX intenta usar el pipeline ES2 de la GPU y conserva el pipeline
-software como alternativa si el controlador no es compatible.
+El heap por defecto (`app.xmx=768m`) deja memoria al sistema en equipos con
+2 GiB de RAM. JavaFX intenta usar el pipeline ES2 de la GPU y conserva el
+pipeline software como alternativa.
 
-## Uso
+## Mapas por ciudad
 
-- El panel lateral está organizado en pestañas: **Puntos**, **Rutas**,
-  **Pasajeros**, **Simular** y **Eventos**. La barra superior incluye Archivo,
-  Simulación, Vistas y Ayuda, además de los controles de marcha y velocidad.
-- En **Vistas** se puede cambiar entre tema claro y oscuro; la preferencia se
-  conserva al reiniciar e incluye los colores del mapa y de los controles.
-- Pulsa **Tab** para ocultar/mostrar el panel y **F11** para entrar en modo
-  presentación; **Esc** sale de la presentación. La simulación continúa al
-  ocultar los paneles.
-- En **Ubicaciones** se pueden agregar puntos haciendo clic en el mapa o
-  escribiendo coordenadas, editar/eliminar puntos e importar/exportar JSON.
-  El archivo JSON usa las claves `id`, `nombre`, `x` (longitud), `y` (latitud)
-  y `tipo`; también se permite importar Excel.
-- En **Trayectos** se optimiza el orden de las paradas con los costes de viaje
-  reales de la red Dijkstra; se respetan los puntos etiquetados como origen y
-  destino. Para más de 15 paradas intermedias se usa una heurística 2-opt
-  limitada para evitar ciclos de optimización largos.
-- En **Simular** se ajusta la hora inicial y la velocidad del reloj (0.5x,
-  1x, 2x, 5x, 10x, 20x o 30x). Los sprites se dibujan únicamente desde zoom 3;
-  cambian de color si están detenidos, averiados o sin ruta.
-- **Pasajeros** configura la demanda base de cada servicio. El modelo actual
-  ajusta la generación por salida según la hora (mañana 2.5x, mediodía 1.8x,
-  tarde 2.8x y noche 0.2x), limita el abordaje a 18 pasajeros por micro y deja
-  una espera aproximada de 15 segundos en las paradas configuradas.
-- Las rutas de **ida** y **vuelta** se dibujan encima de la red con colores
-  exclusivos (ida roja, vuelta azul; unidades en movimiento en verde), con
-  borde y casillas separadas para mostrar/ocultar cada una. Los tres colores
-  salen de `trafiqueishon.ruta.PaletaColores`, única fuente para mapa,
-  simulador y exportadores. Los botones de enfoque encuadran cada ruta.
-- **Vista croquis** (Vistas → Vista croquis, activa por defecto): fondo blanco,
-  calles grises finas, áreas urbanizadas punteadas (derivadas de la densidad de
-  calles), rótulo vertical de zona en rojo, leyenda inferior derecha, panel de
-  paradas de partida/retorno (≈25 % del ancho) y borde verde con línea amarilla.
-  Los rótulos de zona se definen con `MapaRutasCanvas.setZonas(...)`; por
-  defecto solo se rotula JULIACA, porque el GeoJSON no trae polígonos de barrios.
-- **Exportar rutas** admite también TXT: lista en orden todos los puntos del
-  recorrido de partida y de retorno con sus coordenadas (x = longitud,
-  y = latitud).
-- En **Rutas y micros disponibles** se crean servicios con nombre, paraderos
-  seleccionados y ordenables, frecuencia de salida y cantidad de unidades. El
-  sistema fija como terminales los dos paraderos más alejados en tiempo de viaje
-  por la red y ordena las paradas intermedias para minimizar el tiempo total
-  con Dijkstra.
-  Los servicios se guardan en `~/.trafiqueishon/rutas-micros.json` y se
-  reconstruyen contra la red al iniciar.
-  La flota total configurada está limitada a 6.000 unidades; estas se incorporan
-  progresivamente según la frecuencia de salida, no todas al comenzar.
-  Cada ruta se puede editar después: nombre, paraderos y orden, frecuencia,
-  cantidad de micros, demanda y color. El editor permite optimizar el orden
-  automáticamente o respetar el orden manual. Los colores fluorescentes se asignan
-  sin repetir y se puede seleccionar uno distinto desde el editor.
-  La simulación despacha unidades desde ambos terminales a la hora indicada y
-  continúa hasta lanzar la flota completa, aunque la demanda de pasajeros se
-  agote. Al llegar al otro terminal, cada unidad espera un intervalo antes de
-  recorrer la ruta inversa. Se asignan hasta 18 pasajeros por salida.
-  Cada servicio se dibuja con su color propio; al activar las casillas de ida o
-  vuelta, se ocultan esos colores de ruta y se muestran los trazados generales
-  los colores de la paleta (ida roja, vuelta azul).
-- **Exportar rutas** permite marcar una micro y su ida/vuelta individualmente,
-  usar las rutas visibles, marcar todas o seleccionar cualquier combinación.
-  Exporta varios trazados juntos en PDF con mapa, leyenda de colores y marcas de
-  inicio/final, o en GeoJSON, GPX y CSV con identificación por ruta.
+```
+src/main/resources/mapas/
+├── juliaca/  calles.geojson  puntos.json
+├── puno/     puntos.json     (falta calles.geojson)
+└── lima/     puntos.json     (falta calles.geojson)
+```
+
+- `calles.geojson` contiene **solo calles** (`LineString`/`MultiLineString`).
+- `puntos.json` contiene los **puntos de interés** que se dibujan encima:
+  `{"puntos":[{"id","nombre","x"(lon),"y"(lat),"tipo"}]}`. El `tipo`
+  (`EDUCACION`, `SALUD`, `MERCADO`, `TRANSPORTE`, `PLAZA`, …) colorea el marcador.
+- El selector **Ciudad** de la barra superior recarga calles, puntos, rutas
+  guardadas y eventos de la carpeta elegida. Si falta `calles.geojson`, la app
+  avisa dónde colocarlo en lugar de mostrar un mapa vacío.
+- Búsqueda (en orden): `./mapas/<ciudad>/`, `~/.trafiqueishon/mapas/<ciudad>/`
+  y por último el jar. **Lima debe ir fuera del jar** (pesa cientos de MB);
+  se acepta `calles.geojson.gz`. Ver `src/main/resources/mapas/LEEME.md` para
+  descargarla desde overpass-turbo.
+- Las rutas de micros se guardan por ciudad: `~/.trafiqueishon/rutas-micros.json`
+  (Juliaca, archivo histórico) y `rutas-micros-<ciudad>.json` (las demás).
+- `herramientas/generar_puntos.py` crea un `puntos.json` inicial a partir de
+  las avenidas con nombre de un GeoJSON.
+
+## Interfaz
+
+Panel lateral en **Accordion** con cinco secciones plegables:
+
+| Sección | Contenido |
+|---|---|
+| **Mapas** | Datos de la red cargada, recargar/encuadrar, vista croquis, mapa de calor y modo de nombres de puntos (automático, siempre, ocultos). |
+| **Rutas y Puntos** | Micros con **checkbox** para verlas a la vez (cada una con su color), modo **Ida/Vuelta**, buscador y edición de puntos de interés, importación JSON/Excel y trayecto que recorre todos los puntos. |
+| **Simulación** | Hora inicial, iniciar/pausar/continuar/detener, estadísticas en vivo y demanda de pasajeros. |
+| **Eventos** | Trancaderas, cierres, accidentes, lluvia, etc. sobre la vía clicada. |
+| **Exportar** | PDF vista múltiple, PDF vista individual y otros formatos. |
+
+Tipografía: títulos de sección 16 px negrita, botones y texto base 14 px,
+textos secundarios y coordenadas 12 px, con contraste AA en ambos temas.
+**Tab** oculta el panel, **F11** activa el modo presentación, **Esc** sale y
+**Espacio** inicia/continúa (ninguno se dispara mientras se escribe en un campo).
+
+### Vistas de rutas
+
+- **Vista múltiple** (normal): todas las micros marcadas con su color propio;
+  la ida en línea continua y la vuelta discontinua, ligeramente desplazadas
+  para que se vean ambas en calles compartidas.
+- **Modo Ida/Vuelta**: elige una micro (selector o botón ⇄ de su fila) y activa
+  el modo. El mapa oculta las demás rutas y muestra solo su **ida en azul** y su
+  **vuelta en rojo**, con flechas de sentido, marcadores INICIO/FINAL y el panel
+  de paraderos. Las casillas *Ida* / *Vuelta* ocultan cada sentido.
+- Los colores de ida/vuelta salen de `trafiqueishon.ruta.LuisYPaletaColores`, única
+  fuente para mapa, leyenda y exportadores.
+
+### Puntos de interés (LOD)
+
+- Solo se dibujan los puntos dentro del área visible.
+- Con zoom lejano, los puntos que caen en la misma celda de pantalla se agrupan
+  en un **clúster** con su cantidad; al acercarse se separan.
+- Los nombres aparecen desde zoom 4, con halo y **sin encimarse** (rejilla de
+  colisiones). Los inicios/finales de ruta siempre se rotulan.
+
+## Rendimiento y hilos
+
+- **Motor de simulación en hilo propio** (`EberthMMotorSimulacion`): el simulador y los
+  costos del grafo solo se modifican en el hilo `motor-simulacion`, que avanza
+  30 pasos por segundo y publica una foto inmutable del estado. Eventos de
+  tráfico, hora punta y desvíos A* se aplican allí, sin congelar la interfaz.
+- **Render hasta 60 FPS** (`LuisYMapaRutasCanvas`): un `AnimationTimer` lee esa foto
+  en cada fotograma; el mapa nunca se repinta por evento individual. Si un
+  fotograma tarda más de 16 ms, los siguientes se espacian automáticamente.
+- **Viewport culling**: calles por STRtree con la caja visible; rutas, puntos,
+  eventos, cierres y vehículos por caja de pantalla. En mapas grandes con zoom
+  lejano solo se dibujan vías principales y se omiten las de tamaño subpíxel.
+- **Paneo instantáneo**: al arrastrar se desplaza la imagen de calles ya
+  pintada y se repinta al soltar.
+- **Cálculos fuera del hilo de JavaFX** (`calculo-rutas`): crear/restaurar rutas,
+  trayectos y exportaciones PDF.
+- **Memoria para mapas masivos**: coordenadas empaquetadas en `double[]`
+  durante la carga, índice de nodos en rejilla primitiva (CSR) en lugar de
+  STRtree y mapa `long→int` sin objetos para unir vértices. Prueba con un mapa
+  sintético de 250 000 calles / 2,5 M nodos / 4,5 M tramos: el código anterior
+  no cargaba con 1 GiB y retenía ~1,15 GiB; ahora carga con 1 GiB y retiene
+  ~830 MiB.
+
+## Simulación
+
+- Las micros salen desde ambos terminales según su frecuencia hasta completar la
+  flota (máximo 6 000 unidades en total). Hasta 18 pasajeros por salida; espera
+  de ~15 s en paraderos y un intervalo en el terminal antes de volver.
 - El reloj simulado incrementa el tráfico entre 07:00–09:00, 12:00–14:00 y
-  17:00–20:00. Los nombres de calles se dibujan en blanco con contorno oscuro
-  al acercar el mapa, limitando su densidad para mantener legibilidad. La hora
-  configurada y el reloj en marcha también aparecen en la barra inferior.
-- En **Eventos** se agregan trancaderas, cierres, vendedores ambulantes,
-  lluvia, accidentes, venteos/manifestaciones, gasolineras y semáforos rotos.
-  El gestor notifica cambios a sus listeners; los cierres recalculan desvíos
-  con A* sin detener la simulación. La lluvia, las trancaderas y los semáforos
-  alteran el factor de velocidad; una gasolinera detiene la unidad durante
-  tres minutos simulados. Los cierres y accidentes se mantienen hasta eliminar
-  el evento.
-- Al detener la simulación aparece un resumen con abordajes, ocupación media
-  de la flota, unidades con incidencias y tiempo simulado.
-- El mapa admite zoom con rueda y botones, paneo con arrastre y vista completa
-  con doble clic.
+  17:00–20:00, y la demanda (mañana 2.5x, mediodía 1.8x, tarde 2.8x, noche 0.2x).
+- Eventos: lluvia, trancaderas y semáforos alteran la velocidad; una gasolinera
+  detiene la unidad tres minutos simulados; cierres, accidentes y
+  manifestaciones bloquean la vía y recalculan desvíos con A* sin detener la
+  simulación.
+- Al detener aparece un resumen con abordajes, ocupación media, incidencias y
+  tiempo simulado.
+
+## Exportación
+
+- **PDF · Vista múltiple**: una lámina con todas las micros marcadas, cada una
+  con su color (ida continua, vuelta discontinua), panel con la lista de rutas
+  y sus kilómetros, sobre el croquis blanco con calles grises.
+- **PDF · Vista individual**: una lámina con la ida (azul) y la vuelta (roja)
+  de la micro seleccionada y sus paraderos.
+- **Otros formatos**: GeoJSON, GPX, CSV, TXT (puntos en orden con coordenadas)
+  o PDF con una lámina por micro, eligiendo rutas y sentidos.
 
 ## Alcance actual
 
-Los eventos y su estado solo duran mientras la aplicación está abierta. Las
-rutas de micros sí se guardan localmente. El mapa vial es un recurso GeoJSON
-estático incluido en el proyecto. El modelo de pasajeros todavía no asigna
-origen/destino por persona ni simula ascensos y descensos en cada parada; el
-resumen no calcula tiempos promedio individuales ni cuellos de botella.
-Accidentes y manifestaciones no expiran automáticamente: se retiran desde la
-pestaña **Eventos**. La generación de demanda es una aproximación configurable,
-no usa mediciones de tráfico en vivo. El nombre del proyecto Maven es
-`generador-rutas`.
+Los eventos solo duran mientras la aplicación está abierta. El modelo de
+pasajeros no asigna origen/destino por persona ni simula ascensos y descensos en
+cada parada. La generación de demanda es una aproximación configurable, no usa
+mediciones de tráfico en vivo. Los vehículos se actualizan a 30 Hz (paso del
+motor) aunque el mapa se pinte a 60 FPS al hacer zoom o paneo.

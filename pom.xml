@@ -19,6 +19,8 @@
         <jts.version>1.19.0</jts.version>
         <poi.version>5.2.5</poi.version>
         <junit.version>5.10.2</junit.version>
+        <!-- Memoria de la app. Para Lima: mvn javafx:run -Dapp.xmx=2g -->
+        <app.xmx>768m</app.xmx>
     </properties>
 
     <dependencies>
@@ -82,10 +84,10 @@
                 <artifactId>javafx-maven-plugin</artifactId>
                 <version>0.0.8</version>
                 <configuration>
-                    <mainClass>trafiqueishon.Main</mainClass>
+                    <mainClass>trafiqueishon.LuisYMain</mainClass>
                     <options>
                         <option>-Xms128m</option>
-                        <option>-Xmx768m</option>
+                        <option>-Xmx${app.xmx}</option>
                         <option>-XX:+UseG1GC</option>
                         <option>-Dprism.order=es2,sw</option>
                     </options>

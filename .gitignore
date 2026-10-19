@@ -21,3 +21,10 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Mapas masivos (Lima) fuera del jar
+/mapas/
+target/
+.idea/
+*.deb
+*.pdf
