@@ -6,9 +6,9 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class EberthMDemandaPasajerosTest {
 
-    private static final int MEDIODIA_NORMAL = 10 * 60;
-    private static final int HORA_PUNTA_TARDE = 18 * 60;
-    private static final int MADRUGADA = 2 * 60;
+    private static final double MEDIODIA_NORMAL = 1.0;
+    private static final double HORA_PUNTA_TARDE = EberthMPerfilHoraPunta.MULTIPLICADOR_HORA_PUNTA;
+    private static final double MADRUGADA = EberthMPerfilHoraPunta.MULTIPLICADOR_MADRUGADA;
 
     @Test
     void repartePorUnidadYLimitaElAbordajeADieciocho() {
@@ -35,7 +35,7 @@ class EberthMDemandaPasajerosTest {
         int madrugada = new EberthMDemandaPasajeros(10, 1).abordarEnSalida(MADRUGADA);
 
         assertEquals(18, punta);
-        assertEquals(2, madrugada);
+        assertEquals(1, madrugada);
     }
 
     @Test

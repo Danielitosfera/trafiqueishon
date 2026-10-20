@@ -20,13 +20,28 @@ public final class EberthMPerfilHoraPunta {
         return dia.aplanar(factor(minutosDelDia));
     }
 
-    public static double factorDemanda(int minutosDelDia) {
+    public static final double MULTIPLICADOR_HORA_PUNTA = 2.5;
+    public static final double MULTIPLICADOR_MADRUGADA = 0.1;
+
+    /**
+     * Punto único del multiplicador de demanda (paradas y despachador): día laboral, sin hora
+     * punta forzada. Ver {@link #multiplicadorDemanda(EberthMParametrosCiudad, int, EberthMTipoDia, boolean)}.
+     */
+    public static double multiplicadorDemanda(EberthMParametrosCiudad ciudad, int hora, int minuto) {
+        return multiplicadorDemanda(ciudad, hora * 60 + minuto, EberthMTipoDia.LABORAL, false);
+    }
+
+    /**
+     * Multiplicador de la generación de pasajeros según el reloj: dentro de las horas punta
+     * configuradas (o forzadas) ×2,5; de madrugada (22:00–05:00) ×0,1; el resto del día ×1.
+     */
+    public static double multiplicadorDemanda(EberthMParametrosCiudad ciudad, int minutosDelDia,
+                                              EberthMTipoDia dia, boolean forzada) {
+        if (forzada || (ciudad != null && ciudad.esHoraPunta(minutosDelDia, dia))) {
+            return MULTIPLICADOR_HORA_PUNTA;
+        }
         int hora = Math.floorMod(minutosDelDia, 24 * 60) / 60;
-        if (hora >= 6 && hora < 9) return 2.5;
-        if (hora >= 12 && hora < 14) return 1.8;
-        if (hora >= 17 && hora < 20) return 2.8;
-        if (hora >= 22 || hora < 5) return 0.2;
-        return 1.0;
+        return hora < 5 || hora >= 22 ? MULTIPLICADOR_MADRUGADA : 1.0;
     }
 
     public static void aplicar(PieroGGrafoVial grafo, int minutosDelDia) {

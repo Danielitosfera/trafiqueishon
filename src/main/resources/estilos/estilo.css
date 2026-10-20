@@ -1,9 +1,9 @@
 /* ===================================================================
    Jerarquía tipográfica
-     · Títulos de sección ........ 16px bold  (.seccion > .title, .titulo-app)
+     · Títulos de sección ........ 15px bold  (.seccion > .title)  · app: 16px (.titulo-app)
      · Subtítulos ................ 14px bold  (.subtitulo)
      · Botones y texto base ...... 14px       (.root-view)
-     · Secundario / coordenadas .. 12px       (.texto-secundario, .status-item)
+     · Secundario / estado ....... 11px       (.texto-secundario, .status-item)
    =================================================================== */
 .root-view {
     -fx-font-family: "System";
@@ -78,7 +78,7 @@
     -fx-padding: 2 0 0 0;
 }
 
-.texto-secundario, .status-item, .micro-recorrido { -fx-font-size: 12px; }
+.texto-secundario, .status-item, .micro-recorrido { -fx-font-size: 11px; }
 .reloj { -fx-font-size: 14px; -fx-font-weight: bold; }
 
 .theme-dark .titulo-app, .theme-dark .subtitulo { -fx-text-fill: #A9C7FF; }
@@ -197,21 +197,25 @@
 
 /* ----- Accordion del panel lateral ----- */
 .seccion > .title {
-    -fx-font-size: 16px;
+    -fx-font-size: 15px;
     -fx-font-weight: bold;
-    -fx-padding: 10 12 10 12;
+    -fx-padding: 12 14 12 14;
 }
-.theme-dark .seccion > .title { -fx-background-color: #1F2233; -fx-border-color: #34384D; -fx-border-width: 0 0 1 0; }
-.theme-light .seccion > .title { -fx-background-color: #F1F5FB; -fx-border-color: #DCE3ED; -fx-border-width: 0 0 1 0; }
-.theme-dark .seccion:expanded > .title { -fx-background-color: #2B3048; }
-.theme-light .seccion:expanded > .title { -fx-background-color: #DCE8F7; }
+/* Encabezado con un tono propio (más claro que el panel) y una marca de color a la izquierda. */
+.theme-dark .seccion > .title { -fx-background-color: #262B45; -fx-border-color: #3B4160 #34384D #34384D #4A6FB5; -fx-border-width: 0 0 1 3; }
+.theme-light .seccion > .title { -fx-background-color: #E6ECF6; -fx-border-color: #C9D5E6 #DCE3ED #DCE3ED #3267B2; -fx-border-width: 0 0 1 3; }
+.theme-dark .seccion:expanded > .title { -fx-background-color: #313860; -fx-border-color: #3B4160 #34384D #34384D #89B4FA; }
+.theme-light .seccion:expanded > .title { -fx-background-color: #D2E1F5; -fx-border-color: #C9D5E6 #DCE3ED #DCE3ED #24589E; }
 .theme-dark .seccion > .title > .text { -fx-fill: #E6EAF5; }
 .theme-light .seccion > .title > .text { -fx-fill: #1C2638; }
 .theme-dark .seccion:expanded > .title > .text { -fx-fill: #A9C7FF; }
 .theme-light .seccion:expanded > .title > .text { -fx-fill: #24589E; }
 .theme-dark .seccion > .title > .arrow-button > .arrow { -fx-background-color: #A9C7FF; }
 .theme-light .seccion > .title > .arrow-button > .arrow { -fx-background-color: #24589E; }
-.contenido-seccion { -fx-spacing: 10; }
+.contenido-seccion { -fx-spacing: 12; }
+/* Aire alrededor de las líneas divisorias entre grupos de controles. */
+.contenido-seccion .separator { -fx-padding: 4 0 4 0; }
+.contenido-seccion .subtitulo { -fx-padding: 4 0 0 0; }
 
 /* Filas de micros con checkbox */
 .fila-micro { -fx-padding: 8; -fx-background-radius: 8; -fx-border-radius: 8; -fx-border-width: 1; }
@@ -282,3 +286,9 @@
 .boton-evento { -fx-font-size: 13px; -fx-font-weight: bold; }
 .theme-dark .boton-evento:selected { -fx-background-color: #C2410C; -fx-text-fill: white; }
 .theme-light .boton-evento:selected { -fx-background-color: #EA580C; -fx-text-fill: white; }
+
+/* Cuadro de estadísticas en tiempo real (panel lateral y flotante sobre el mapa). */
+.panel-estadisticas { -fx-padding: 10; -fx-background-radius: 10; -fx-border-radius: 10; -fx-border-width: 1; }
+.theme-dark .panel-estadisticas { -fx-background-color: rgba(24, 26, 39, 0.94); -fx-border-color: #34384D; }
+.theme-light .panel-estadisticas { -fx-background-color: rgba(255, 255, 255, 0.96); -fx-border-color: #DCE3ED; }
+.panel-estadisticas .valor-estadistica { -fx-font-weight: bold; -fx-font-size: 13px; }

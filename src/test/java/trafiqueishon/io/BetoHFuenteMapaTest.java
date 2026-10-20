@@ -72,4 +72,27 @@ class BetoHFuenteMapaTest {
     private static void assertInstanceOfCompactas(Object coords) {
         assertTrue(coords instanceof PieroGCoordenadasCompactas, "coords debe ser compacta");
     }
+
+    @Test
+    void eliminarCiudadBorraLaCarpetaYLaQuitaDeLaLista() throws Exception {
+        Path carpeta = Files.createDirectories(temporal.resolve("cusco"));
+        Files.writeString(carpeta.resolve("calles.geojson"), "{}");
+        Files.writeString(carpeta.resolve("puntos.json"), "{}");
+        BetoHFuenteMapa fuente = new BetoHFuenteMapa(List.of(temporal), false);
+        PieroGCiudadMapa cusco = PieroGCiudadMapa.personalizada("cusco", false);
+        assertTrue(fuente.ciudadesEliminables().contains(cusco));
+
+        fuente.eliminarCiudad(cusco);
+
+        assertFalse(Files.exists(carpeta));
+        assertFalse(fuente.existe(cusco, BetoHFuenteMapa.CALLES));
+        assertFalse(fuente.ciudadesEliminables().contains(cusco));
+    }
+
+    @Test
+    void noSePuedeEliminarUnMapaQueVieneEnElJar() {
+        BetoHFuenteMapa fuente = new BetoHFuenteMapa(List.of(temporal), true);
+        assertTrue(fuente.estaEmpaquetada(PieroGCiudadMapa.JULIACA));
+        assertThrows(java.io.IOException.class, () -> fuente.eliminarCiudad(PieroGCiudadMapa.JULIACA));
+    }
 }

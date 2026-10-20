@@ -15,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class EberthMDespachadorTest {
 
-    private static final int MINUTO = 10 * 60;
+    private static final double MINUTO = 1.0;
 
     @Test
     void lasDosPrimerasUnidadesSalenJuntasUnaDeCadaTerminal() {
@@ -141,5 +141,26 @@ class EberthMDespachadorTest {
                 new ArrayList<>(grafo.getEdges()), 0, 0, "PARTIDA");
         return new EberthMServicioMicro("s1", "Servicio", trayecto, trayecto, frecuenciaMinutos,
                 unidades, pasajeros, "#2E9E44");
+    }
+
+    @Test
+    void enHoraPuntaUsaLaFrecuenciaPuntaYFueraDeEllaLaNormal() {
+        EberthMServicioMicro base = servicio(10, 6, 100);
+        EberthMServicioMicro conPunta = new EberthMServicioMicro(base.id(), base.nombre(), base.trayecto(),
+                base.trayectoVuelta(), 10, 6, 100, base.color(), base.retorno(), 2);
+        EberthMDespachador despachador = new EberthMDespachador(conPunta);
+        despachador.siguienteSalida(0, MINUTO, true);
+        despachador.siguienteSalida(0, MINUTO, true);
+        assertTrue(despachador.siguienteSalida(119, MINUTO, true).isEmpty());
+        assertTrue(despachador.siguienteSalida(120, MINUTO, true).isPresent());
+        assertEquals(240, despachador.proximoDespacho(), 1e-9);
+        assertTrue(despachador.siguienteSalida(240, MINUTO, false).isPresent());
+        assertEquals(840, despachador.proximoDespacho(), 1e-9);
+    }
+
+    @Test
+    void sinFrecuenciaPuntaPropiaSeDerivaDeLaNormal() {
+        assertEquals(7, servicio(10, 4, 100).frecuenciaPuntaMinutos());
+        assertEquals(1, servicio(1, 4, 100).frecuenciaPuntaMinutos());
     }
 }

@@ -15,7 +15,6 @@ import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
 import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
-import javafx.stage.FileChooser;
 import trafiqueishon.geo.PieroGCiudadMapa;
 import trafiqueishon.geo.PieroGEdge;
 import trafiqueishon.geo.PieroGGrafoVial;
@@ -80,6 +79,7 @@ public class LuisYVentanaPrincipal {
     private static final Preferences PREFERENCIAS =
             Preferences.userNodeForPackage(LuisYVentanaPrincipal.class);
     private static final String PREFERENCIA_TEMA_CLARO = "tema-claro";
+    private static final String PREFERENCIA_ESTADISTICAS_OCULTAS = "estadisticas-ocultas";
     private static final String PREFERENCIA_CIUDAD = "ciudad";
 
     // ===== Infraestructura de la ventana =====
@@ -143,18 +143,20 @@ public class LuisYVentanaPrincipal {
     private final Label lblZoom = new Label("Zoom: --");
     private final Label lblInfoVista = new Label("");
     private final Label lblRelojStatus = new Label("Hora: --:--");
+    private final Label lblDemandaActual = new Label("Demanda: --");
     private final Label lblHoraSimulada = new Label("Hora simulada: --:--");
-    private final Label lblEstadisticas = new Label("Sin simulación activa.");
+    private final LuisYPanelEstadisticas estadisticasLateral = new LuisYPanelEstadisticas(null);
+    private final LuisYPanelEstadisticas estadisticasFlotante =
+            new LuisYPanelEstadisticas(this::ocultarEstadisticasFlotantes);
+    private final ToggleButton btnEstadisticas = new ToggleButton("📊");
+    /** El usuario cerró el cuadro flotante; se recuerda entre sesiones. */
+    private boolean estadisticasOcultasPorUsuario = PREFERENCIAS.getBoolean(PREFERENCIA_ESTADISTICAS_OCULTAS, false);
     private final ProgressIndicator progreso = new ProgressIndicator();
     private final ToggleGroup grupoEventosLocales = new ToggleGroup();
     private final ToggleButton toggleHoraPunta = new ToggleButton("🚌  Hora Punta");
     private final TextField nombreEvento = new TextField();
-    private final Spinner<Integer> pasajerosSimulados = new Spinner<>(
-            new SpinnerValueFactory.IntegerSpinnerValueFactory(
-                    LuisYDialogoRutaMicro.MIN_PASAJEROS, EberthMServicioMicro.MAX_PASAJEROS, 120));
     private final Spinner<Integer> horaInicio = new Spinner<>(0, 23, 7);
     private final Spinner<Integer> minutoInicio = new Spinner<>(0, 59, 0);
-    private final Label resumenPasajeros = new Label();
     private final ComboBox<Integer> escalaDemanda = new ComboBox<>();
     private final ComboBox<Double> velocidadSimulacion = new ComboBox<>();
     private boolean temaClaro;
@@ -169,6 +171,7 @@ public class LuisYVentanaPrincipal {
     });
     private final EberthMGestorEventos gestorEventos = new EberthMGestorEventos();
     private final BetoHLectorPuntosJson lectorJson = new BetoHLectorPuntosJson();
+    private final BetoHLectorPuntosGeoJson lectorGeoJson = new BetoHLectorPuntosGeoJson();
     private final DanielTImportadorMapa importadorMapa = new DanielTImportadorMapa(fuenteMapa);
     private final BetoHLectorPuntosExcel lectorExcel = new BetoHLectorPuntosExcel();
     private BetoHRepositorioServiciosMicro repositorioMicros;
@@ -180,6 +183,9 @@ public class LuisYVentanaPrincipal {
     /** Cambia con cada ciudad: descarta resultados asíncronos de la ciudad anterior. */
     private long generacionCiudad;
     private long versionEventos;
+    private long versionRecalculoTrayectos;
+    /** Eventos que cambian el grafo (todos menos los zonales) de la última publicación. */
+    private List<EberthMEventoTrafico> eventosViales = List.of();
     private int trabajosEnCurso;
     private boolean cargandoMapa;
     private PieroGGrafoVial grafo;
@@ -194,6 +200,7 @@ public class LuisYVentanaPrincipal {
     // ===== Estado =====
     private boolean colocandoPunto;
     private boolean colocandoEvento;
+    private TitledPane panelEventos;
     /** Tipos de punto que los pasajeros pueden tener como destino (no paradas ni terminales). */
     private static final Set<LuisYPuntoImportante.TipoPunto> ES_POI = java.util.EnumSet.of(
             LuisYPuntoImportante.TipoPunto.POI, LuisYPuntoImportante.TipoPunto.EDUCACION,
@@ -226,6 +233,7 @@ public class LuisYVentanaPrincipal {
             temaClaro = PREFERENCIAS.getBoolean(PREFERENCIA_TEMA_CLARO, false);
             construirUI();
             configurarCallbacks();
+            configurarArrastrarYSoltar();
             relojUi.start();
             PieroGCiudadMapa inicial = fuenteMapa
                     .buscarCiudad(PREFERENCIAS.get(PREFERENCIA_CIUDAD, "juliaca"))
@@ -255,12 +263,16 @@ public class LuisYVentanaPrincipal {
         mapa.setTemaClaro(temaClaro);
         StackPane.setAlignment(panelParadas, Pos.TOP_RIGHT);
         StackPane.setMargin(panelParadas, new Insets(12));
-        capaCentral.getChildren().addAll(vistaCroquis, panelParadas);
+        StackPane.setAlignment(estadisticasFlotante, Pos.TOP_LEFT);
+        StackPane.setMargin(estadisticasFlotante, new Insets(12));
+        capaCentral.getChildren().addAll(vistaCroquis, panelParadas, estadisticasFlotante);
+        actualizarVisibilidadEstadisticas();
         root.setCenter(capaCentral);
 
         barraSuperior.getChildren().setAll(crearToolbar());
         root.setTop(barraSuperior);
         root.setLeft(crearPanelLateral());
+        actualizarVisibilidadEstadisticas();
 
         barraEstado = crearStatusBar();
         root.setBottom(barraEstado);
@@ -287,6 +299,7 @@ public class LuisYVentanaPrincipal {
         selectorEtiquetas.valueProperty().addListener((o, a, b) -> mapa.setEtiquetasPuntos(b));
 
         refrescarSelectorCiudad();
+        selectorCiudad.setOnShowing(e -> refrescarSelectorCiudad());
         selectorCiudad.valueProperty().addListener((o, anterior, nueva) -> {
             if (ignorarCambioCiudad || nueva == null) return;
             if (nueva.esImportar()) {
@@ -310,7 +323,6 @@ public class LuisYVentanaPrincipal {
         minutoInicio.setEditable(true);
         horaInicio.valueProperty().addListener((o, a, b) -> actualizarHoraPrevia());
         minutoInicio.valueProperty().addListener((o, a, b) -> actualizarHoraPrevia());
-        pasajerosSimulados.valueProperty().addListener((o, a, b) -> actualizarResumenPasajeros());
 
         toggleHoraPunta.selectedProperty().addListener((o, a, activa) ->
                 ejecutarSeguro("hora punta", () -> alternarHoraPunta(activa)));
@@ -322,7 +334,9 @@ public class LuisYVentanaPrincipal {
             @Override public Integer fromString(String s) { return s == null || s.length() < 2 ? 1 : Integer.valueOf(s.substring(1)); }
         });
         escalaDemanda.getSelectionModel().select(Integer.valueOf(1));
-        escalaDemanda.valueProperty().addListener((o, a, b) -> actualizarResumenPasajeros());
+        escalaDemanda.valueProperty().addListener((o, a, b) ->
+                actualizarDemandaActual(motor.instantanea().haySimulacion()
+                        ? motor.instantanea().horaMinutos() : horaInicio.getValue() * 60 + minutoInicio.getValue()));
         velocidadSimulacion.getItems().setAll(0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0);
         velocidadSimulacion.setPrefWidth(95);
         velocidadSimulacion.getSelectionModel().select(Double.valueOf(1.0));
@@ -339,11 +353,17 @@ public class LuisYVentanaPrincipal {
         mapa.setOnError(msg -> {
             cargandoMapa = false;
             actualizarProgreso();
+            proyectoPendiente = null; // el proyecto en curso no se pudo abrir
             lblEstado.setText(msg);
             lblInfoMapa.setText(msg);
         });
         mapa.setOnInfoMapa(lblInfoVista::setText);
         mapa.setOnClic(this::procesarClicMapa);
+        mapa.setOnDobleClic(this::procesarDobleClicMapa);
+        // Al salir del panel Eventos se desarma el evento elegido: no se coloca por accidente.
+        acordeon.expandedPaneProperty().addListener((o, antes, ahora) -> {
+            if (antes == panelEventos && ahora != panelEventos) grupoEventosLocales.selectToggle(null);
+        });
         mapa.setOnMouseMoveCallback(lonlat -> {
             lblCoords.setText(String.format("Long.: %.5f  Lat.: %.5f", lonlat[0], lonlat[1]));
             lblZoom.setText(String.format("Zoom: %.1f", mapa.getZoom()));
@@ -354,7 +374,6 @@ public class LuisYVentanaPrincipal {
                 cambio -> Platform.runLater(() -> alEventosOrganicos(cambio))));
 
         actualizarHoraPrevia();
-        actualizarResumenPasajeros();
     }
 
     private void manejarAtajos(KeyEvent evento) {
@@ -409,7 +428,14 @@ public class LuisYVentanaPrincipal {
 
         Button btnSoloMapa = new Button("Solo mapa");
         btnSoloMapa.setOnAction(e -> alternarPanelLateral());
-        HBox grupoVista = grupo(btnSoloMapa);
+        btnEstadisticas.setTooltip(new Tooltip("Mostrar u ocultar el cuadro de estadísticas sobre el mapa"));
+        btnEstadisticas.setSelected(!estadisticasOcultasPorUsuario);
+        btnEstadisticas.setOnAction(e -> {
+            estadisticasOcultasPorUsuario = !btnEstadisticas.isSelected();
+            PREFERENCIAS.putBoolean(PREFERENCIA_ESTADISTICAS_OCULTAS, estadisticasOcultasPorUsuario);
+            actualizarVisibilidadEstadisticas();
+        });
+        HBox grupoVista = grupo(btnSoloMapa, btnEstadisticas);
 
         Button zoomOut = crearBotonIcono("−", "Alejar", mapa::zoomOut);
         Button zoomIn = crearBotonIcono("+", "Acercar", mapa::zoomIn);
@@ -428,25 +454,47 @@ public class LuisYVentanaPrincipal {
                 new Separator(Orientation.VERTICAL),
                 grupoVista,
                 espacio,
+                lblDemandaActual,
                 lblRelojStatus,
                 new Separator(Orientation.VERTICAL),
                 grupoZoom);
         lblRelojStatus.getStyleClass().add("reloj");
+        lblDemandaActual.getStyleClass().add("reloj");
 
         return new VBox(menuBar, controles);
     }
 
     private MenuBar crearMenuBar() {
         Menu archivo = new Menu("Archivo");
-        MenuItem importar = item("Importar ubicaciones JSON", this::cargarPuntosJson);
+        MenuItem guardarProyecto = item("Guardar Proyecto", () -> guardarProyecto(false));
+        guardarProyecto.setAccelerator(new javafx.scene.input.KeyCodeCombination(
+                KeyCode.S, javafx.scene.input.KeyCombination.CONTROL_DOWN));
+        MenuItem guardarComo = item("Guardar Como…", () -> guardarProyecto(true));
+        guardarComo.setAccelerator(new javafx.scene.input.KeyCodeCombination(KeyCode.S,
+                javafx.scene.input.KeyCombination.CONTROL_DOWN,
+                javafx.scene.input.KeyCombination.SHIFT_DOWN));
+        MenuItem abrirProyecto = item("Abrir Proyecto…", this::abrirProyecto);
+        abrirProyecto.setAccelerator(new javafx.scene.input.KeyCodeCombination(
+                KeyCode.O, javafx.scene.input.KeyCombination.CONTROL_DOWN));
+        MenuItem importar = item("Importar ubicaciones (JSON / GeoJSON)", this::cargarPuntosJson);
         MenuItem importarGeoJson = item("Extraer ubicaciones de las calles (GeoJSON)", this::cargarPuntosGeoJson);
         MenuItem importarExcel = item("Importar ubicaciones Excel", this::cargarPuntosExcel);
         MenuItem plantilla = item("Crear plantilla Excel", this::crearPlantillaExcel);
         MenuItem guardar = item("Guardar ubicaciones JSON", this::guardarPuntos);
+        MenuItem eliminarMapa = item("Eliminar mapa…", this::eliminarMapa);
         MenuItem salir = new MenuItem("Salir");
-        salir.setOnAction(e -> Platform.exit());
-        archivo.getItems().addAll(importar, importarGeoJson, importarExcel, plantilla,
-                new SeparatorMenuItem(), guardar, new SeparatorMenuItem(), salir);
+        // Dispara el mismo flujo que la X de la ventana (pregunta por cambios sin guardar).
+        salir.setOnAction(e -> {
+            var ventana = root.getScene() == null ? null : root.getScene().getWindow();
+            if (ventana == null) Platform.exit();
+            else ventana.fireEvent(new javafx.stage.WindowEvent(ventana,
+                    javafx.stage.WindowEvent.WINDOW_CLOSE_REQUEST));
+        });
+        MenuItem nuevaSimulacion = item("Nueva Simulación…", this::nuevaSimulacion);
+        archivo.getItems().addAll(nuevaSimulacion, new SeparatorMenuItem(), abrirProyecto, guardarProyecto, guardarComo, new SeparatorMenuItem(),
+                importar, importarGeoJson, importarExcel, plantilla,
+                new SeparatorMenuItem(), guardar, new SeparatorMenuItem(), eliminarMapa,
+                new SeparatorMenuItem(), salir);
 
         Menu vistas = new Menu("Vistas");
         RadioMenuItem oscuro = new RadioMenuItem("Tema oscuro");
@@ -503,7 +551,8 @@ public class LuisYVentanaPrincipal {
         TitledPane pois = seccion("📍  Puntos de Interés", crearSeccionPuntos());
         TitledPane ciudad = seccion("🏙  Configuración de Ciudad", crearSeccionConfiguracionCiudad());
         TitledPane simulacion = seccion("▶  Simulación", crearSeccionSimulacion());
-        TitledPane eventosPane = seccion("⚡  Eventos", crearSeccionEventos());
+        panelEventos = seccion("⚡  Eventos", crearSeccionEventos());
+        TitledPane eventosPane = panelEventos;
         TitledPane exportar = seccion("⬇  Exportar", crearSeccionExportar());
         acordeon.getPanes().addAll(mapas, rutas, pois, ciudad, simulacion, eventosPane, exportar);
         acordeon.setExpandedPane(rutas);
@@ -520,7 +569,8 @@ public class LuisYVentanaPrincipal {
     }
 
     private TitledPane seccion(String titulo, VBox contenido) {
-        contenido.setPadding(new Insets(12));
+        contenido.setPadding(new Insets(14, 16, 16, 16));
+        contenido.setSpacing(12);
         contenido.getStyleClass().add("contenido-seccion");
         TitledPane pane = new TitledPane(titulo, contenido);
         pane.getStyleClass().add("seccion");
@@ -544,8 +594,8 @@ public class LuisYVentanaPrincipal {
 
     private static GridPane rejillaBotones(Button... botones) {
         GridPane rejilla = new GridPane();
-        rejilla.setHgap(6);
-        rejilla.setVgap(6);
+        rejilla.setHgap(8);
+        rejilla.setVgap(8);
         ColumnConstraints col = new ColumnConstraints();
         col.setPercentWidth(50);
         rejilla.getColumnConstraints().addAll(col, col);
@@ -582,6 +632,7 @@ public class LuisYVentanaPrincipal {
         // --- Micros con checkboxes (vista múltiple)
         HBox accionesMicros = new HBox(6,
                 boton("➕ Crear ruta", this::crearRutaMicro),
+                botonCompacto("🤖 Autogenerar Rutas", this::autogenerarRutasMicro),
                 botonCompacto("Todas", () -> marcarTodasLasMicros(true)),
                 botonCompacto("Ninguna", () -> marcarTodasLasMicros(false)));
         HBox.setHgrow(accionesMicros.getChildren().getFirst(), Priority.ALWAYS);
@@ -656,15 +707,9 @@ public class LuisYVentanaPrincipal {
                                 editarPunto(listaPuntos.getSelectionModel().getSelectedItem(), null)),
                         boton("Eliminar seleccionado", this::eliminarPunto)),
                 new Separator(),
-                subtitulo("Importador"),
-                rejillaBotones(
-                        boton("Importar JSON", this::cargarPuntosJson),
-                        boton("Importar Excel", this::cargarPuntosExcel),
-                        boton("Extraer de calles", this::cargarPuntosGeoJson),
-                        boton("Plantilla Excel", this::crearPlantillaExcel)),
-                boton("Guardar ubicaciones JSON", this::guardarPuntos),
-                ayuda("Importar reemplaza la lista actual. «Extraer de calles» crea los puntos "
-                        + "a partir de las avenidas del calles.geojson de la ciudad."));
+                ayuda("Importar, extraer de las calles, la plantilla Excel y guardar ubicaciones están "
+                        + "en el menú Archivo. Importar reemplaza la lista actual; «Extraer ubicaciones "
+                        + "de las calles» crea los puntos a partir de las avenidas del calles.geojson."));
     }
 
     private VBox crearSeccionConfiguracionCiudad() {
@@ -685,8 +730,8 @@ public class LuisYVentanaPrincipal {
         lblAvisoParametros.getStyleClass().add("texto-secundario");
 
         GridPane form = new GridPane();
-        form.setHgap(8);
-        form.setVgap(8);
+        form.setHgap(10);
+        form.setVgap(10);
         ColumnConstraints etiquetas = new ColumnConstraints();
         ColumnConstraints campos = new ColumnConstraints();
         campos.setHgrow(Priority.ALWAYS);
@@ -710,6 +755,7 @@ public class LuisYVentanaPrincipal {
                 subtitulo("Parámetros de la ciudad"),
                 form,
                 lblAvisoParametros,
+                new Separator(),
                 rejillaBotones(
                         boton("Aplicar", this::aplicarParametrosCiudad),
                         boton("Valores por defecto", this::restablecerParametrosCiudad)),
@@ -842,14 +888,9 @@ public class LuisYVentanaPrincipal {
     }
 
     private VBox crearSeccionSimulacion() {
-        pasajerosSimulados.setEditable(true);
-        resumenPasajeros.getStyleClass().add("texto-secundario");
-        resumenPasajeros.setWrapText(true);
         horaInicio.setPrefWidth(80);
         minutoInicio.setPrefWidth(80);
-        lblEstadisticas.setWrapText(true);
-        lblEstadisticas.getStyleClass().add("texto-secundario");
-        lblHoraSimulada.getStyleClass().add("reloj");
+        lblHoraSimulada.getStyleClass().add("texto-secundario");
         selectorTipoDia.getItems().setAll(EberthMTipoDia.values());
         selectorTipoDia.setValue(EberthMTipoDia.LABORAL);
         selectorTipoDia.setMaxWidth(Double.MAX_VALUE);
@@ -872,7 +913,7 @@ public class LuisYVentanaPrincipal {
                 subtitulo("Reloj"),
                 hora,
                 lblHoraSimulada,
-                lblEstadisticas,
+                estadisticasLateral,
                 new Separator(),
                 subtitulo("Tipo de día"),
                 selectorTipoDia,
@@ -892,10 +933,10 @@ public class LuisYVentanaPrincipal {
                         + "La simulación corre en un hilo propio: la interfaz y el mapa "
                         + "siguen fluidos aunque haya miles de micros y eventos."),
                 new Separator(),
-                subtitulo("Demanda de pasajeros por salida"),
-                pasajerosSimulados,
-                new HBox(8, new Label("Escala de simulación (multiplicador de demanda)"), escalaDemanda),
-                resumenPasajeros,
+                subtitulo("Demanda de pasajeros"),
+                new HBox(8, new Label("Escala de simulación"), escalaDemanda),
+                ayuda("La demanda de pasajeros se calcula automáticamente según la población y la hora simulada. "
+                        + "Para cambiarla, ajusta la población o el % de transporte público en «Configuración de Ciudad»."),
                 ayuda("Factores: mañana 2.5x · mediodía 1.8x · tarde 2.8x · noche 0.2x. "
                         + "Capacidad: 18 pasajeros por micro."));
     }
@@ -906,7 +947,7 @@ public class LuisYVentanaPrincipal {
         listaEventos.setPrefHeight(160);
         return new VBox(10,
                 subtitulo("Incidentes viales"),
-                subtitulo("Eventos locales · elige uno y haz clic en el mapa"),
+                subtitulo("Eventos locales · elige uno y haz doble clic en el mapa"),
                 crearGridEventosLocales(),
                 nombreEvento,
                 new Separator(),
@@ -924,8 +965,8 @@ public class LuisYVentanaPrincipal {
 
     private GridPane crearGridEventosLocales() {
         GridPane rejilla = new GridPane();
-        rejilla.setHgap(6);
-        rejilla.setVgap(6);
+        rejilla.setHgap(8);
+        rejilla.setVgap(8);
         ColumnConstraints col = new ColumnConstraints();
         col.setPercentWidth(50);
         rejilla.getColumnConstraints().addAll(col, col);
@@ -951,10 +992,10 @@ public class LuisYVentanaPrincipal {
             if (b == null) return;
             colocandoPunto = false;
             lblEstado.setText(((EberthMTipoEvento) b.getUserData()).bloqueaNodo()
-                    ? "Haz clic sobre la intersección afectada para colocar el evento."
+                    ? "Haz doble clic sobre la intersección afectada para colocar el evento."
                     : ((EberthMTipoEvento) b.getUserData()).esZonal()
-                    ? "Haz clic en el centro de la lluvia (radio de 1 km)."
-                    : "Haz clic sobre la vía afectada para colocar el evento.");
+                    ? "Haz doble clic en el centro de la lluvia (radio de 1 km)."
+                    : "Haz doble clic sobre la vía afectada para colocar el evento. Vuelve a pulsar el botón para cancelar.");
         });
         return rejilla;
     }
@@ -988,7 +1029,22 @@ public class LuisYVentanaPrincipal {
         ejecutarSeguro("alternar panel", () -> {
             boolean mostrar = root.getLeft() == null;
             root.setLeft(mostrar ? panelLateral : null);
+            actualizarVisibilidadEstadisticas();
         });
+    }
+
+    /** El cuadro flotante solo aparece con el panel lateral cerrado (Solo mapa) y si el usuario lo quiere. */
+    private void actualizarVisibilidadEstadisticas() {
+        boolean ver = root.getLeft() == null && !estadisticasOcultasPorUsuario;
+        estadisticasFlotante.setVisible(ver);
+        estadisticasFlotante.setManaged(ver);
+    }
+
+    private void ocultarEstadisticasFlotantes() {
+        estadisticasOcultasPorUsuario = true;
+        btnEstadisticas.setSelected(false);
+        PREFERENCIAS.putBoolean(PREFERENCIA_ESTADISTICAS_OCULTAS, true);
+        actualizarVisibilidadEstadisticas();
     }
 
     private void aplicarTema(boolean claro) {
@@ -1012,11 +1068,13 @@ public class LuisYVentanaPrincipal {
                 root.setLeft(null);
                 root.setBottom(null);
                 mostrarBotonSalirPresentacion();
+                actualizarVisibilidadEstadisticas();
             } else {
                 root.setTop(barraSuperior);
                 root.setLeft(panelVisibleAntesPresentacion ? panelLateral : null);
                 root.setBottom(barraEstado);
                 ocultarBotonSalirPresentacion();
+                actualizarVisibilidadEstadisticas();
             }
         });
     }
@@ -1047,11 +1105,7 @@ public class LuisYVentanaPrincipal {
     private void cambiarCiudad(PieroGCiudadMapa nueva, PieroGCiudadMapa anterior) {
         if (nueva.equals(ciudadActual)) return;
         if (!fuenteMapa.existe(nueva, BetoHFuenteMapa.CALLES)) {
-            revertirSelectorCiudad(anterior);
-            mostrarError("Mapa de " + nueva.nombre() + " no disponible",
-                    "No se encontró calles.geojson para " + nueva.nombre() + ".\n\nColócalo en:\n• "
-                            + String.join("\n• ", fuenteMapa.lugaresBuscados(nueva))
-                            + "\n\nConsulta Ayuda → «¿Dónde poner los mapas de Puno y Lima?».");
+            mapaNoEncontrado(nueva);
             return;
         }
         if (puntosModificados && !confirmar("Cambiar de ciudad",
@@ -1068,7 +1122,12 @@ public class LuisYVentanaPrincipal {
         ignorarCambioCiudad = true;
         try {
             PieroGCiudadMapa actual = ciudadActual;
-            List<PieroGCiudadMapa> items = new ArrayList<>(PieroGCiudadMapa.DISPONIBLES);
+            // Una carpeta borrada (desde la app o desde fuera) desaparece de la lista.
+            List<PieroGCiudadMapa> items = new ArrayList<>();
+            for (PieroGCiudadMapa c : PieroGCiudadMapa.DISPONIBLES) {
+                if (c.equals(PieroGCiudadMapa.JULIACA) || c.equals(actual)
+                        || fuenteMapa.existe(c, BetoHFuenteMapa.CALLES)) items.add(c);
+            }
             items.addAll(fuenteMapa.ciudadesImportadas());
             items.add(PieroGCiudadMapa.IMPORTAR);
             selectorCiudad.getItems().setAll(items);
@@ -1080,8 +1139,8 @@ public class LuisYVentanaPrincipal {
 
     /** Elige un GeoJSON crudo, pide el nombre de la ciudad y lo guarda en la carpeta del usuario. */
     private void importarMapaNuevo() {
-        File archivo = elegirArchivo("Importar mapa (GeoJSON de Overpass)", "GeoJSON",
-                "*.geojson;*.json", false, null);
+        File archivo = elegirArchivo("Importar mapa (GeoJSON de Overpass)",
+                "Mapas GeoJSON (*.geojson, *.json)", "*.geojson;*.json", false, null);
         if (archivo == null) return;
         TextInputDialog pregunta = new TextInputDialog();
         estilizarDialogo(pregunta);
@@ -1108,16 +1167,20 @@ public class LuisYVentanaPrincipal {
         String nombreCiudad = nombre.get();
         enSegundoPlano("Importando mapa de " + nombreCiudad.trim(), () -> {
             try {
-                return importadorMapa.importarCiudad(archivo.toPath(), nombreCiudad);
+                return importadorMapa.importarCiudad(new File(archivo.getAbsolutePath()).toPath(), nombreCiudad);
             } catch (IOException ex) {
-                throw new java.io.UncheckedIOException(ex);
+                LOG.log(Level.WARNING, "GeoJSON no válido: " + archivo, ex);
+                Platform.runLater(() -> mostrarError("Mapa no válido", DanielTImportadorMapa.MENSAJE_INVALIDO));
+                return null;
             }
         }, ciudad -> {
+            if (ciudad == null) return;
             refrescarSelectorCiudad();
             lblEstado.setText("Mapa «" + ciudad.nombre() + "» guardado en "
                     + fuenteMapa.carpetaUsuario(ciudad) + ". Cargando…");
             if (ciudad.equals(ciudadActual)) recargarCiudad();
             else cambiarCiudad(ciudad, ciudadActual);
+            lblEstado.setText("Mapa importado correctamente");
         });
     }
 
@@ -1131,7 +1194,96 @@ public class LuisYVentanaPrincipal {
     }
 
     private void recargarCiudad() {
-        if (ciudadActual != null) activarCiudad(ciudadActual);
+        if (ciudadActual == null) return;
+        if (!fuenteMapa.existe(ciudadActual, BetoHFuenteMapa.CALLES)) {
+            mapaNoEncontrado(ciudadActual);
+            return;
+        }
+        activarCiudad(ciudadActual);
+    }
+
+    /**
+     * El mapa elegido ya no está en disco (p. ej. se borró la carpeta desde fuera). Avisa, quita la
+     * ciudad de la lista y, si era la ciudad en pantalla, carga el mapa por defecto para que no
+     * quede nada del mapa fantasma en el mapa, la simulación ni los paneles.
+     */
+    private void mapaNoEncontrado(PieroGCiudadMapa faltante) {
+        boolean eraLaActual = faltante.equals(ciudadActual);
+        mostrarError("Mapa no encontrado", "No se encontró el mapa de " + faltante.nombre()
+                + ".\n\nBuscado en:\n• " + String.join("\n• ", fuenteMapa.lugaresBuscados(faltante))
+                + (eraLaActual ? "\n\nSe cargará " + PieroGCiudadMapa.JULIACA.nombre() + "."
+                : "\n\nSigues en " + (ciudadActual == null ? "el mapa actual" : ciudadActual.nombre()) + "."));
+        if (eraLaActual) {
+            puntosModificados = false;
+            proyectoPendiente = null;
+            activarCiudad(PieroGCiudadMapa.JULIACA);
+        } else {
+            revertirSelectorCiudad(ciudadActual);
+        }
+        refrescarSelectorCiudad();
+    }
+
+    /** Menú Archivo → Eliminar mapa: borra del disco un mapa importado y limpia todo lo suyo en memoria. */
+    private void eliminarMapa() {
+        List<PieroGCiudadMapa> eliminables = fuenteMapa.ciudadesEliminables();
+        if (eliminables.isEmpty()) {
+            Alert info = new Alert(Alert.AlertType.INFORMATION,
+                    "No hay mapas que se puedan eliminar. Los mapas que vienen dentro de la aplicación "
+                            + "(Juliaca) no se borran; solo los importados o colocados en carpetas externas.",
+                    ButtonType.OK);
+            estilizarDialogo(info);
+            info.setTitle("Eliminar mapa");
+            info.setHeaderText(null);
+            info.showAndWait();
+            return;
+        }
+        ChoiceDialog<PieroGCiudadMapa> dialogo = new ChoiceDialog<>(eliminables.getFirst(), eliminables);
+        estilizarDialogo(dialogo);
+        dialogo.setTitle("Eliminar mapa");
+        dialogo.setHeaderText("Elige el mapa que quieres borrar del disco");
+        dialogo.setContentText("Mapa:");
+        Optional<PieroGCiudadMapa> elegida = dialogo.showAndWait();
+        if (elegida.isEmpty()) return;
+        PieroGCiudadMapa ciudad = elegida.get();
+        boolean activa = ciudad.equals(ciudadActual);
+        if (activa && cargandoMapa) {
+            mostrarError("Mapa en uso", "No se puede eliminar el mapa porque está en uso: "
+                    + "espera a que termine de cargar.");
+            return;
+        }
+        if (!confirmar("Eliminar mapa", "Se borrarán de forma permanente las carpetas del mapa «"
+                + ciudad.nombre() + "», sus rutas guardadas y sus parámetros."
+                + (activa ? "\nEs el mapa abierto: se cargará " + PieroGCiudadMapa.JULIACA.nombre() + "." : ""))) {
+            return;
+        }
+        try {
+            fuenteMapa.eliminarCiudad(ciudad);
+        } catch (BetoHFuenteMapa.MapaEnUsoException ex) {
+            LOG.log(Level.WARNING, "Mapa en uso: " + ciudad, ex);
+            mostrarError("Mapa en uso", "No se puede eliminar el mapa porque está en uso.");
+            return;
+        } catch (IOException ex) {
+            LOG.log(Level.WARNING, "No se pudo eliminar " + ciudad, ex);
+            mostrarError("No se pudo eliminar", ex.getMessage());
+            return;
+        }
+        // Restos de la ciudad fuera de su carpeta: rutas guardadas y parámetros.
+        try {
+            BetoHRepositorioServiciosMicro.eliminarDeCiudad(ciudad);
+        } catch (IOException ex) {
+            LOG.log(Level.WARNING, "No se pudieron borrar las rutas guardadas de " + ciudad, ex);
+        }
+        if (parametrosPorCiudad.remove(ciudad.id()) != null) guardarConfigCiudades();
+        if (proyectoPendiente != null && proyectoPendiente.ciudadId().equals(ciudad.id())) {
+            proyectoPendiente = null;
+        }
+        if (activa) {
+            // activarCiudad vacía rutas, POIs, eventos, selecciones, simulación y mapa antes de cargar.
+            puntosModificados = false;
+            activarCiudad(PieroGCiudadMapa.JULIACA);
+        }
+        refrescarSelectorCiudad();
+        lblEstado.setText("Mapa «" + ciudad.nombre() + "» eliminado.");
     }
 
     /** Limpia todo el estado de la ciudad anterior y carga la nueva en segundo plano. */
@@ -1193,6 +1345,12 @@ public class LuisYVentanaPrincipal {
                 + grafo.numNodos() + " nodos · " + grafo.numEdges() + " tramos.\nArchivo: " + origen);
         lblEstado.setText("Red de " + ciudadActual.nombre() + " lista: " + grafo.numNodos()
                 + " nodos, " + grafo.numEdges() + " tramos.");
+        DanielTEstadoProyecto pendiente = proyectoPendiente;
+        proyectoPendiente = null;
+        if (pendiente != null && pendiente.ciudadId().equals(ciudadActual.id())) {
+            aplicarProyecto(pendiente);
+            return;
+        }
         cargarPuntosCiudad();
         cargarRutasMicrosGuardadas();
     }
@@ -1363,7 +1521,8 @@ public class LuisYVentanaPrincipal {
         if (foto.version() == versionUiSimulacion) return;
         versionUiSimulacion = foto.version();
         if (!foto.haySimulacion()) {
-            lblEstadisticas.setText("Sin simulación activa.");
+            estadisticasLateral.actualizar(foto);
+            estadisticasFlotante.actualizar(foto);
             actualizarHoraPrevia();
             return;
         }
@@ -1371,12 +1530,22 @@ public class LuisYVentanaPrincipal {
         String hhmm = String.format("%02d:%02d", minutos / 60, minutos % 60);
         lblHoraSimulada.setText((foto.ejecutando() ? "Hora simulada: " : "En pausa: ") + hhmm);
         lblRelojStatus.setText("Hora: " + hhmm + (foto.ejecutando() ? "" : " ⏸"));
-        lblEstadisticas.setText(String.format(
-                "Unidades en circulación: %d · Abordajes: %d%nOcupación media: %.0f%% · "
-                        + "Incidencias: %d · Tiempo simulado: %.1f min",
-                foto.vehiculos().size(), foto.pasajerosTransportados(),
-                foto.ocupacionPromedio() * 100, foto.vehiculosConIncidencia(),
-                foto.segundosSimulados() / 60));
+        actualizarDemandaActual(minutos);
+        estadisticasLateral.actualizar(foto);
+        estadisticasFlotante.actualizar(foto);
+    }
+
+    /** Muestra si la hora simulada está en pico, valle o madrugada según los parámetros de la ciudad. */
+    private void actualizarDemandaActual(int minutos) {
+        EberthMTipoDia dia = selectorTipoDia.getValue();
+        double hora = EberthMPerfilHoraPunta.multiplicadorDemanda(parametrosCiudad, minutos,
+                dia, toggleHoraPunta.isSelected());
+        String estado = hora >= EberthMPerfilHoraPunta.MULTIPLICADOR_HORA_PUNTA ? "🔴 Hora Punta"
+                : hora <= EberthMPerfilHoraPunta.MULTIPLICADOR_MADRUGADA ? "🌙 Madrugada" : "🟢 Normal";
+        // Lo que realmente se aplica: hora × tipo de día × escala elegida por el usuario.
+        int escala = escalaDemanda.getValue() == null ? 1 : escalaDemanda.getValue();
+        double total = hora * dia.demandaGlobal() * escala;
+        lblDemandaActual.setText(String.format("Demanda: %s ×%.1f", estado, total));
     }
 
     private void actualizarHoraPrevia() {
@@ -1384,14 +1553,6 @@ public class LuisYVentanaPrincipal {
         String hora = String.format("%02d:%02d", horaInicio.getValue(), minutoInicio.getValue());
         lblHoraSimulada.setText("Hora inicial: " + hora);
         lblRelojStatus.setText("Hora: " + hora);
-    }
-
-    private void actualizarResumenPasajeros() {
-        int escala = escalaDemanda.getValue() == null ? 1 : escalaDemanda.getValue();
-        long efectiva = (long) pasajerosSimulados.getValue() * escala;
-        resumenPasajeros.setText("Demanda base por ruta: " + pasajerosSimulados.getValue()
-                + " pasajeros" + (escala > 1 ? " x" + escala + " = " + efectiva + " al simular" : "")
-                + "; ajustada por la hora del día. La escala se aplica al iniciar la simulación.");
     }
 
     // ==================================================================
@@ -1408,8 +1569,7 @@ public class LuisYVentanaPrincipal {
             return;
         }
         Optional<LuisYDialogoRutaMicro.Datos> datos = LuisYDialogoRutaMicro.mostrar(
-                this::estilizarDialogo, this::mostrarError, puntos, rutasMicros, existente,
-                pasajerosSimulados.getValue());
+                this::estilizarDialogo, this::mostrarError, puntos, rutasMicros, existente);
         if (datos.isEmpty()) return;
         LuisYDialogoRutaMicro.Datos d = datos.get();
 
@@ -1435,7 +1595,9 @@ public class LuisYVentanaPrincipal {
         }
         int frecuenciaMin = d.frecuenciaMin();
         int unidadesValor = d.unidades();
-        int pasajerosValor = d.pasajeros();
+        // Campo heredado del formato guardado: la demanda real sale de la ciudad.
+        int pasajerosValor = existente == null ? LuisYDialogoRutaMicro.MIN_PASAJEROS
+                : existente.pasajerosEsperando();
         boolean optimizar = d.optimizarOrden();
         PieroGGrafoVial red = grafo;
         // Dijkstra/A* fuera del hilo de JavaFX: en Lima puede tardar segundos.
@@ -1464,6 +1626,100 @@ public class LuisYVentanaPrincipal {
             lblEstado.setText(rutaNombre + ": " + seleccionados.size() + " paraderos, cada "
                     + frecuenciaMin + " min · " + servicio.trayecto().resumen());
         });
+    }
+
+    /** Crea 3-5 rutas sobre los POIs más concurridos; el cálculo A* corre fuera del hilo de JavaFX. */
+    private void autogenerarRutasMicro() {
+        if (grafo == null || puntos.size() < 2) {
+            lblEstado.setText("Carga al menos dos puntos de interés antes de autogenerar rutas.");
+            return;
+        }
+        Optional<EberthMGeneradorRutas.Opciones> elegidas = pedirOpcionesGeneracion();
+        if (elegidas.isEmpty()) return;
+        EberthMGeneradorRutas.Opciones opciones = elegidas.get();
+        PieroGGrafoVial red = grafo;
+        List<LuisYPuntoImportante> pois = List.copyOf(puntos);
+        List<EberthMServicioMicro> existentes = List.copyOf(rutasMicros);
+        EberthMParametrosCiudad ciudad = parametrosCiudad == null ? null : parametrosCiudad.copia();
+        enSegundoPlano("Generando rutas", () ->
+                new EberthMGeneradorRutas(red, pois, ciudad).generar(existentes, opciones), generadas -> {
+            List<EberthMServicioMicro> aceptadas = new ArrayList<>();
+            for (EberthMServicioMicro servicio : generadas) {
+                if (EberthMGestorServicios.flotaExcedida(rutasMicros, servicio)) break;
+                rutasMicros.add(servicio);
+                rutasMicrosVisibles.add(servicio.id());
+                gestor.agregar(servicio.trayecto());
+                aceptadas.add(servicio);
+            }
+            if (aceptadas.isEmpty()) {
+                lblEstado.setText("No se pudieron generar rutas: faltan POIs lejanos conectados por calles.");
+                return;
+            }
+            actualizarFilasRutasMicro();
+            actualizarVisualizacionRutas();
+            guardarRutasMicros();
+            lblEstado.setText("Se generaron " + aceptadas.size() + " rutas automáticas.");
+        });
+    }
+
+    /** Aplica al valor del spinner el texto escrito; si no es un número válido, restaura el valor. */
+    private void confirmarTexto(Spinner<Integer> spinner) {
+        try {
+            spinner.getValueFactory().setValue(Integer.parseInt(spinner.getEditor().getText().trim()));
+        } catch (NumberFormatException ex) {
+            spinner.getEditor().setText(String.valueOf(spinner.getValue()));
+        }
+    }
+
+    /** Diálogo con los parámetros de la autogeneración; {@code empty} si el usuario cancela. */
+    private Optional<EberthMGeneradorRutas.Opciones> pedirOpcionesGeneracion() {
+        Spinner<Integer> rutas = new Spinner<>(1, 30, 5);
+        Spinner<Integer> paradas = new Spinner<>(3, 10, 5);
+        int sugeridas = EberthMGeneradorRutas.unidadesSugeridas(parametrosCiudad);
+        Spinner<Integer> unidades = new Spinner<>(5, 150, Math.clamp(sugeridas, 5, 150));
+        CheckBox flotaAuto = new CheckBox("Calcular flota según la ciudad");
+        flotaAuto.setSelected(true);
+        unidades.disableProperty().bind(flotaAuto.selectedProperty());
+        Label sugerencia = new Label("Sugerido: " + sugeridas + " micros por ruta (población × % transporte ÷ 5000)");
+        sugerencia.getStyleClass().add("texto-secundario");
+        sugerencia.setWrapText(true);
+        Spinner<Integer> frecuencia = new Spinner<>(5, 30, 10);
+        Spinner<Integer> frecuenciaPunta = new Spinner<>(1, 10, 3);
+        List<Spinner<Integer>> campos = List.of(rutas, paradas, unidades, frecuencia, frecuenciaPunta);
+        for (Spinner<Integer> sp : campos) {
+            sp.setEditable(true);
+            sp.setMaxWidth(Double.MAX_VALUE);
+            // Escribir el número directamente: se confirma al salir del campo o con Enter.
+            sp.getEditor().focusedProperty().addListener((o, antes, ahora) -> {
+                if (!ahora) confirmarTexto(sp);
+            });
+            sp.getEditor().setOnAction(e -> confirmarTexto(sp));
+        }
+        GridPane form = new GridPane();
+        form.setHgap(10);
+        form.setVgap(10);
+        form.addRow(0, new Label("Cantidad de rutas (1-30)"), rutas);
+        form.addRow(1, new Label("Paradas promedio por ruta (3-10)"), paradas);
+        form.addRow(2, new Label("Unidades por ruta (5-150)"), unidades);
+        form.add(flotaAuto, 1, 3);
+        form.add(sugerencia, 0, 4, 2, 1);
+        form.addRow(5, new Label("Frecuencia hora normal (5-30 min)"), frecuencia);
+        form.addRow(6, new Label("Frecuencia hora punta (1-10 min)"), frecuenciaPunta);
+
+        Dialog<EberthMGeneradorRutas.Opciones> dialogo = new Dialog<>();
+        estilizarDialogo(dialogo);
+        dialogo.setTitle("Autogenerar rutas");
+        dialogo.setHeaderText("Parámetros de las rutas a generar");
+        dialogo.getDialogPane().setContent(form);
+        dialogo.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+        dialogo.setResultConverter(b -> {
+            if (b != ButtonType.OK) return null;
+            campos.forEach(this::confirmarTexto);
+            return new EberthMGeneradorRutas.Opciones(rutas.getValue(), paradas.getValue(),
+                    flotaAuto.isSelected() ? 0 : unidades.getValue(), frecuencia.getValue(),
+                    Math.min(frecuenciaPunta.getValue(), frecuencia.getValue()));
+        });
+        return dialogo.showAndWait();
     }
 
     private void eliminarRutaMicro(EberthMServicioMicro ruta) {
@@ -1567,9 +1823,19 @@ public class LuisYVentanaPrincipal {
             guardadas = repositorioMicros.cargar();
         } catch (IOException ex) {
             lblEstado.setText("No se pudieron cargar rutas guardadas: " + ex.getMessage());
+            marcarEstadoLimpio();
             return;
         }
-        if (guardadas.isEmpty()) return;
+        restaurarRutas(guardadas, this::marcarEstadoLimpio);
+    }
+
+    /** Reconstruye las rutas sobre la red actual en segundo plano; {@code alTerminar} corre al final. */
+    private void restaurarRutas(List<BetoHRepositorioServiciosMicro.RutaGuardada> guardadas,
+                                Runnable alTerminar) {
+        if (guardadas.isEmpty()) {
+            alTerminar.run();
+            return;
+        }
         PieroGGrafoVial red = grafo;
         enSegundoPlano("Restaurando " + guardadas.size() + " rutas de " + ciudadActual.nombre(), () -> {
             return EberthMGestorServicios.restaurar(red, guardadas);
@@ -1582,7 +1848,8 @@ public class LuisYVentanaPrincipal {
                     ajustado = new EberthMServicioMicro(servicio.id(), servicio.nombre(), servicio.trayecto(),
                             servicio.trayectoVuelta(), servicio.frecuenciaMinutos(),
                             servicio.unidadesDisponibles(), servicio.pasajerosEsperando(),
-                            EberthMGestorServicios.siguienteColor(rutasMicros), servicio.retorno());
+                            EberthMGestorServicios.siguienteColor(rutasMicros), servicio.retorno(),
+                            servicio.frecuenciaPuntaMinutos());
                     repararColores = true;
                 }
                 rutasMicros.add(ajustado);
@@ -1593,6 +1860,7 @@ public class LuisYVentanaPrincipal {
             actualizarVisualizacionRutas();
             if (repararColores) guardarRutasMicros();
             lblEstado.setText("Rutas de micros restauradas: " + rutasMicros.size());
+            alTerminar.run();
         });
     }
 
@@ -1695,13 +1963,22 @@ public class LuisYVentanaPrincipal {
             if (colocandoPunto) {
                 colocandoPunto = false;
                 editarPunto(null, new double[]{lon, lat});
-            } else if (colocandoEvento) {
-                colocandoEvento = false;
-                agregarEvento(lon, lat);
             }
         } catch (Throwable t) {
             LOG.log(Level.WARNING, "Error al procesar clic de mapa", t);
         }
+    }
+
+    /** Doble clic: con un evento armado y el panel Eventos abierto, lo coloca en el mapa. */
+    private boolean procesarDobleClicMapa(double[] lonLat) {
+        if (!colocandoEvento || acordeon.getExpandedPane() != panelEventos) return false;
+        try {
+            agregarEvento(lonLat[0], lonLat[1]);
+        } catch (RuntimeException ex) {
+            LOG.log(Level.WARNING, "No se pudo colocar el evento", ex);
+            lblEstado.setText("No se pudo colocar el evento: " + ex.getMessage());
+        }
+        return true;
     }
 
     private void editarPunto(LuisYPuntoImportante existente, double[] coordenadas) {
@@ -1819,7 +2096,92 @@ public class LuisYVentanaPrincipal {
     }
 
     private void cargarPuntosJson() {
-        importarPuntos("Importar ubicaciones JSON", "JSON", "*.json", lectorJson::leer);
+        importarPuntos("Importar ubicaciones (JSON / GeoJSON)", "Archivos JSON y GeoJSON",
+                "*.json;*.geojson", this::leerPuntosAutodetectando);
+    }
+
+    /**
+     * Lee ubicaciones según la extensión: {@code .geojson} y {@code .xlsx} tienen su lector; un
+     * {@code .json} se prueba primero como lista de puntos y, si no lo es, como GeoJSON.
+     */
+    private List<LuisYPuntoImportante> leerPuntosAutodetectando(java.nio.file.Path archivo) throws IOException {
+        String nombre = archivo.getFileName().toString().toLowerCase(Locale.ROOT);
+        if (nombre.endsWith(".xlsx")) return lectorExcel.leer(archivo);
+        if (nombre.endsWith(".geojson")) return leerGeoJsonNoVacio(archivo);
+        try {
+            return lectorJson.leer(archivo);
+        } catch (IOException | RuntimeException noEsLista) {
+            try {
+                return leerGeoJsonNoVacio(archivo);
+            } catch (IOException | RuntimeException tampoco) {
+                throw new IOException("El archivo no es una lista de ubicaciones JSON ni un GeoJSON válido: "
+                        + noEsLista.getMessage(), noEsLista);
+            }
+        }
+    }
+
+    private List<LuisYPuntoImportante> leerGeoJsonNoVacio(java.nio.file.Path archivo) throws IOException {
+        List<LuisYPuntoImportante> leidos = lectorGeoJson.leer(archivo);
+        if (leidos.isEmpty()) throw new IOException("El GeoJSON no contiene puntos de interés (solo calles).");
+        return leidos;
+    }
+
+    private static boolean esArchivoImportable(File f) {
+        String n = f.getName().toLowerCase(Locale.ROOT);
+        return f.isFile() && (n.endsWith(".json") || n.endsWith(".geojson") || n.endsWith(".xlsx"));
+    }
+
+    /** Arrastrar y soltar un .json/.geojson/.xlsx sobre la ventana importa sus ubicaciones. */
+    private void configurarArrastrarYSoltar() {
+        final String estiloActivo = "-fx-border-color: #FF8A00; -fx-border-width: 4; -fx-border-style: dashed;";
+        root.setOnDragOver(e -> {
+            if (e.getDragboard().hasFiles() && e.getDragboard().getFiles().stream()
+                    .anyMatch(LuisYVentanaPrincipal::esArchivoImportable)) {
+                e.acceptTransferModes(javafx.scene.input.TransferMode.COPY);
+                capaCentral.setStyle(estiloActivo);
+            }
+            e.consume();
+        });
+        root.setOnDragExited(e -> capaCentral.setStyle(""));
+        root.setOnDragDropped(e -> {
+            capaCentral.setStyle("");
+            File archivo = e.getDragboard().hasFiles() ? e.getDragboard().getFiles().stream()
+                    .filter(LuisYVentanaPrincipal::esArchivoImportable).findFirst().orElse(null) : null;
+            e.setDropCompleted(archivo != null);
+            e.consume();
+            if (archivo == null) {
+                mostrarError("Archivo no válido", "Suelta un archivo .json, .geojson o .xlsx con ubicaciones.");
+                return;
+            }
+            importarArchivoSoltado(archivo);
+        });
+    }
+
+    private void importarArchivoSoltado(File archivo) {
+        long generacion = generacionCiudad;
+        lblEstado.setText("Leyendo " + archivo.getName() + "…");
+        trabajoIniciado();
+        CompletableFuture.supplyAsync(() -> {
+            try {
+                return leerPuntosAutodetectando(archivo.toPath());
+            } catch (IOException ex) {
+                throw new java.io.UncheckedIOException(ex);
+            }
+        }, calculos).whenComplete((nuevos, error) -> Platform.runLater(() -> {
+            trabajoTerminado();
+            if (error != null) {
+                Throwable causa = error.getCause() != null ? error.getCause() : error;
+                lblEstado.setText("No se pudo importar " + archivo.getName() + ".");
+                mostrarError("Archivo no válido", archivo.getName() + ": " + causa.getMessage());
+                return;
+            }
+            if (generacion != generacionCiudad) return;
+            puntos.clear();
+            puntos.addAll(nuevos);
+            puntosModificados = true;
+            actualizarListaPuntos();
+            lblEstado.setText("Ubicaciones importadas de " + archivo.getName() + ": " + puntos.size());
+        }));
     }
 
     private void cargarPuntosExcel() {
@@ -1913,14 +2275,198 @@ public class LuisYVentanaPrincipal {
         }
     }
 
+    // ==================================================================
+    //  PROYECTO (guardar / abrir todo el estado)
+    // ==================================================================
+
+    private static final String TITULO_VENTANA = "Trafiqueishon - Simulador de Buses";
+    /** Archivo del proyecto abierto o guardado; {@code null} si aún no se guardó. */
+    private Path archivoProyecto;
+
+    /** Foto del estado actual de la aplicación, lista para serializar. */
+    private DanielTEstadoProyecto capturarEstado() {
+        var foto = motor.instantanea();
+        int horaMinutos = foto.haySimulacion() ? foto.horaMinutos()
+                : horaInicio.getValue() * 60 + minutoInicio.getValue();
+        EberthMTipoDia dia = selectorTipoDia.getValue() == null
+                ? EberthMTipoDia.LABORAL : selectorTipoDia.getValue();
+        return new DanielTEstadoProyecto(DanielTEstadoProyecto.VERSION_ACTUAL,
+                ciudadActual.id(), ciudadActual.nombre(), ciudadActual.grande(),
+                BetoHRepositorioConfigCiudades.ParametrosGuardados.desde(parametrosCiudad),
+                rutasMicros.stream().map(BetoHRepositorioServiciosMicro::aGuardada).toList(),
+                List.copyOf(puntos), horaMinutos, dia.name(), chkEventosOrganicos.isSelected());
+    }
+
+    /** Guarda en el archivo actual; con {@code comoNuevo} (o sin archivo aún) pregunta dónde. */
+    private boolean guardarProyecto(boolean comoNuevo) {
+        if (ciudadActual == null || parametrosCiudad == null) {
+            lblEstado.setText("Espera a que cargue la ciudad antes de guardar.");
+            return false;
+        }
+        Path destino = archivoProyecto;
+        if (comoNuevo || destino == null) {
+            File carpetaInicial = archivoProyecto != null && archivoProyecto.getParent() != null
+                    ? archivoProyecto.getParent().toFile() : null;
+            var ventana = root.getScene() == null ? null : root.getScene().getWindow();
+            File elegido = LuisYSelectorArchivos.guardar(ventana, "Guardar proyecto",
+                    List.of(LuisYSelectorArchivos.filtro("Proyecto Trafiqueishon (*.traf)", "*.traf"),
+                            LuisYSelectorArchivos.filtro("JSON (*.json)", "*.json")),
+                    carpetaInicial, "proyecto-" + ciudadActual.id() + ".traf", this::estilizarDialogo);
+            if (elegido == null) return false;
+            destino = elegido.toPath();
+            String nombre = destino.getFileName().toString().toLowerCase(Locale.ROOT);
+            if (!nombre.endsWith(".traf") && !nombre.endsWith(".json")) {
+                destino = asegurarExtension(destino, "traf");
+            }
+        }
+        try {
+            capturarEstado().guardar(destino);
+        } catch (IOException | RuntimeException ex) {
+            LOG.log(Level.WARNING, "No se pudo guardar el proyecto", ex);
+            mostrarError("No se pudo guardar el proyecto",
+                    "No se escribió el archivo:\n" + destino + "\n\n" + ex.getMessage());
+            return false;
+        }
+        archivoProyecto = destino;
+        marcarEstadoLimpio();
+        actualizarTituloVentana();
+        lblEstado.setText("Proyecto guardado en " + destino);
+        Alert ok = new Alert(Alert.AlertType.INFORMATION, "Proyecto guardado con éxito.\n" + destino,
+                ButtonType.OK);
+        estilizarDialogo(ok);
+        ok.setTitle("Guardar proyecto");
+        ok.setHeaderText(null);
+        ok.showAndWait();
+        return true;
+    }
+
+    /** Estado de referencia: lo último guardado, abierto o cargado al iniciar la ciudad. */
+    private DanielTEstadoProyecto estadoLimpio;
+    private DanielTEstadoProyecto proyectoPendiente;
+    private Path archivoPendiente;
+
+    /** El reloj y el switch de eventos no cuentan como cambios del proyecto. */
+    private static DanielTEstadoProyecto sinEfimeros(DanielTEstadoProyecto e) {
+        return new DanielTEstadoProyecto(e.version(), e.ciudadId(), e.ciudadNombre(), e.ciudadGrande(),
+                e.parametros(), e.rutas(), e.puntos(), 0, e.tipoDia(), false);
+    }
+
+    private void marcarEstadoLimpio() {
+        estadoLimpio = ciudadActual == null || parametrosCiudad == null
+                ? null : sinEfimeros(capturarEstado());
+    }
+
+    private boolean hayCambiosSinGuardar() {
+        if (ciudadActual == null || parametrosCiudad == null) return false;
+        if (estadoLimpio == null) return !rutasMicros.isEmpty() || puntosModificados;
+        return !sinEfimeros(capturarEstado()).equals(estadoLimpio);
+    }
+
+    /**
+     * Si hay cambios, pregunta si guardarlos. @return {@code true} si se puede continuar
+     * (guardó o descartó) y {@code false} si el usuario canceló o el guardado no se completó.
+     */
+    private boolean resolverCambiosSinGuardar(String accion) {
+        if (!hayCambiosSinGuardar()) return true;
+        ButtonType guardar = new ButtonType("Guardar", ButtonBar.ButtonData.YES);
+        ButtonType descartar = new ButtonType("No guardar", ButtonBar.ButtonData.NO);
+        ButtonType cancelar = new ButtonType("Cancelar", ButtonBar.ButtonData.CANCEL_CLOSE);
+        Alert alerta = new Alert(Alert.AlertType.CONFIRMATION,
+                "Hay rutas o cambios sin guardar. ¿Deseas guardar los cambios antes de " + accion + "?",
+                guardar, descartar, cancelar);
+        estilizarDialogo(alerta);
+        alerta.setTitle("Cambios sin guardar");
+        alerta.setHeaderText(null);
+        ButtonType respuesta = alerta.showAndWait().orElse(cancelar);
+        if (respuesta == guardar) return guardarProyecto(false);
+        return respuesta == descartar;
+    }
+
+    /** Llamado al cerrar la ventana; {@code false} cancela el cierre. */
+    public boolean confirmarCierre() {
+        try {
+            return resolverCambiosSinGuardar("salir");
+        } catch (RuntimeException ex) {
+            LOG.log(Level.WARNING, "No se pudo comprobar los cambios sin guardar", ex);
+            return true; // nunca dejar la ventana imposible de cerrar
+        }
+    }
+
+    private void abrirProyecto() {
+        if (!resolverCambiosSinGuardar("abrir otro proyecto")) return;
+        var ventana = root.getScene() == null ? null : root.getScene().getWindow();
+        File elegido = LuisYSelectorArchivos.abrir(ventana, "Abrir proyecto",
+                List.of(LuisYSelectorArchivos.filtro("Proyectos Trafiqueishon (*.traf, *.json)", "*.traf;*.json"),
+                        LuisYSelectorArchivos.filtro("Todos los archivos", "*.*")),
+                null, this::estilizarDialogo);
+        if (elegido == null) return;
+        try {
+            DanielTEstadoProyecto estado = DanielTEstadoProyecto.cargar(elegido.toPath());
+            PieroGCiudadMapa ciudad = fuenteMapa.buscarCiudad(estado.ciudadId()).orElse(null);
+            if (ciudad == null) {
+                mostrarError("Ciudad no disponible", "El proyecto es de la ciudad «"
+                        + estado.ciudadNombre() + "» y no está instalada ni importada en este equipo.");
+                return;
+            }
+            if (!fuenteMapa.existe(ciudad, BetoHFuenteMapa.CALLES)) {
+                mostrarError("Mapa no disponible", "Falta el mapa de calles de " + ciudad.nombre() + ".");
+                return;
+            }
+            EberthMParametrosCiudad parametros = estado.parametros() == null
+                    ? EberthMParametrosCiudad.porDefecto(ciudad) : estado.parametros().aParametros();
+            parametrosPorCiudad.put(ciudad.id(), parametros);
+            proyectoPendiente = estado;
+            archivoPendiente = elegido.toPath();
+            lblEstado.setText("Abriendo proyecto " + elegido.getName() + "…");
+            activarCiudad(ciudad);
+        } catch (IOException | RuntimeException ex) {
+            proyectoPendiente = null;
+            LOG.log(Level.WARNING, "No se pudo abrir el proyecto " + elegido, ex);
+            mostrarError("No se pudo abrir el proyecto", "«" + elegido.getName()
+                    + "» está dañado o no es un proyecto de Trafiqueishon válido.\n\n"
+                    + "No se modificó nada de lo que tienes abierto.");
+        }
+    }
+
+    /** Aplica el proyecto sobre la ciudad ya cargada: POIs, reloj, tipo de día y rutas. */
+    private void aplicarProyecto(DanielTEstadoProyecto estado) {
+        puntos.clear();
+        puntos.addAll(estado.puntos());
+        puntosModificados = false;
+        actualizarListaPuntos();
+        horaInicio.getValueFactory().setValue(Math.floorMod(estado.horaMinutos(), 1440) / 60);
+        minutoInicio.getValueFactory().setValue(Math.floorMod(estado.horaMinutos(), 60));
+        try {
+            selectorTipoDia.setValue(EberthMTipoDia.valueOf(estado.tipoDia()));
+        } catch (RuntimeException ex) {
+            selectorTipoDia.setValue(EberthMTipoDia.LABORAL);
+        }
+        chkEventosOrganicos.setSelected(estado.eventosOrganicos());
+        Path archivo = archivoPendiente;
+        restaurarRutas(estado.rutas(), () -> {
+            guardarRutasMicros(); // las rutas del proyecto pasan a ser las de la ciudad
+            archivoProyecto = archivo;
+            actualizarTituloVentana();
+            marcarEstadoLimpio();
+            lblEstado.setText("Proyecto «" + (archivo == null ? "" : archivo.getFileName())
+                    + "» abierto: " + rutasMicros.size() + " rutas, " + puntos.size() + " puntos.");
+        });
+    }
+
+    private void actualizarTituloVentana() {
+        if (root.getScene() != null && root.getScene().getWindow() instanceof javafx.stage.Stage stage) {
+            stage.setTitle(archivoProyecto == null ? TITULO_VENTANA
+                    : archivoProyecto.getFileName() + " — " + TITULO_VENTANA);
+        }
+    }
+
     private File elegirArchivo(String titulo, String descripcion, String patron, boolean guardar,
                                String nombreInicial) {
-        FileChooser chooser = new FileChooser();
-        chooser.setTitle(titulo);
-        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter(descripcion, patron));
-        if (nombreInicial != null) chooser.setInitialFileName(nombreInicial);
         var ventana = root.getScene() == null ? null : root.getScene().getWindow();
-        return guardar ? chooser.showSaveDialog(ventana) : chooser.showOpenDialog(ventana);
+        var filtros = List.of(LuisYSelectorArchivos.filtro(descripcion, patron));
+        return guardar
+                ? LuisYSelectorArchivos.guardar(ventana, titulo, filtros, null, nombreInicial, this::estilizarDialogo)
+                : LuisYSelectorArchivos.abrir(ventana, titulo, filtros, null, this::estilizarDialogo);
     }
 
     // ==================================================================
@@ -2197,7 +2743,6 @@ public class LuisYVentanaPrincipal {
     private void agregarEvento(double lon, double lat) {
         EberthMTipoEvento tipo = tipoEventoSeleccionado();
         if (tipo == null) return;
-        grupoEventosLocales.selectToggle(null);
         publicarEvento(tipo, lon, lat);
     }
 
@@ -2232,6 +2777,75 @@ public class LuisYVentanaPrincipal {
         lblEstado.setText("Evento eliminado; costos recalculándose.");
     }
 
+    /** Reset selectivo: solo borra lo que el usuario marca en el diálogo. */
+    private void nuevaSimulacion() {
+        CheckBox chkRutas = new CheckBox("Borrar todas las Rutas de Micros");
+        CheckBox chkEventos = new CheckBox("Borrar todos los Eventos de Tráfico");
+        CheckBox chkPois = new CheckBox("Borrar todos los Puntos de Interés (POIs)");
+        CheckBox chkReloj = new CheckBox("Reiniciar el Reloj de Simulación (07:00)");
+        CheckBox chkEstadisticas = new CheckBox("Borrar también el historial de estadísticas");
+        Label aviso = new Label("Esta acción no se puede deshacer.");
+        aviso.setStyle("-fx-text-fill: #d93025; -fx-font-weight: bold;");
+        VBox contenido = new VBox(10, new Label("Selecciona qué deseas borrar para iniciar una nueva simulación"),
+                new Separator(), chkRutas, chkEventos, chkPois, chkReloj, chkEstadisticas, new Separator(), aviso);
+
+        Dialog<Boolean> dialogo = new Dialog<>();
+        estilizarDialogo(dialogo);
+        dialogo.setTitle("Nueva simulación");
+        dialogo.setHeaderText(null);
+        dialogo.getDialogPane().setContent(contenido);
+        ButtonType aplicar = new ButtonType("Aplicar Reset", ButtonBar.ButtonData.OK_DONE);
+        dialogo.getDialogPane().getButtonTypes().addAll(ButtonType.CANCEL, aplicar);
+        dialogo.setResultConverter(b -> b == aplicar);
+        if (!dialogo.showAndWait().orElse(false)) return;
+
+        boolean rutas = chkRutas.isSelected();
+        boolean borrarEventos = chkEventos.isSelected();
+        boolean pois = chkPois.isSelected();
+        boolean reloj = chkReloj.isSelected();
+        boolean estadisticas = chkEstadisticas.isSelected();
+        if (!rutas && !borrarEventos && !pois && !reloj && !estadisticas) {
+            lblEstado.setText("Nueva simulación: no se marcó nada, no se borró nada.");
+            return;
+        }
+
+        // Quitar rutas o volver el reloj atrás invalida la simulación en curso: limpiar() la detiene
+        // y vacía vehículos, pasajeros de paradas y contadores.
+        if (rutas || reloj || estadisticas) motor.ejecutar(EberthMSimuladorBuses::limpiar);
+        if (reloj) {
+            horaInicio.getValueFactory().setValue(7);
+            minutoInicio.getValueFactory().setValue(0);
+        }
+        if (borrarEventos) {
+            eventos.clear();
+            listaEventos.getSelectionModel().clearSelection();
+            gestorEventos.publicar(List.of());
+        }
+        if (rutas) {
+            motor.ejecutar(s -> s.actualizarServicios(List.of()));
+            rutasMicros.clear();
+            rutasMicrosVisibles.clear();
+            gestor.limpiar();
+            listaTrayectos.getItems().clear();
+            trayectoPartida = null;
+            trayectoRetorno = null;
+            btnModoIdaVuelta.setSelected(false);
+            panelParadas.ocultar();
+            actualizarFilasRutasMicro();
+            actualizarVisualizacionRutas();
+            guardarRutasMicros();
+        }
+        if (pois) {
+            puntos.clear();
+            puntosModificados = true;
+            listaPuntos.getSelectionModel().clearSelection();
+            actualizarListaPuntos();
+        }
+        versionUiSimulacion = -1;
+        actualizarHoraPrevia();
+        lblEstado.setText("Nueva simulación aplicada.");
+    }
+
     private void eliminarTodosLosEventos() {
         if (eventos.isEmpty()) return;
         gestorEventos.publicar(List.of());
@@ -2242,9 +2856,10 @@ public class LuisYVentanaPrincipal {
                                     List<EberthMServicioMicro> servicios) {}
 
     /**
-     * Listener del gestor de eventos (hilo de JavaFX). La parte visible se
-     * actualiza al instante; aplicar costos al grafo y recalcular desvíos se
-     * hace en el hilo del motor, sin congelar la interfaz.
+     * Listener del gestor de eventos (hilo de JavaFX). La parte visible se actualiza al instante y el
+     * trabajo pesado nunca corre en este hilo: aplicar costos al grafo es una orden corta del hilo del
+     * motor, y recalcular los trayectos (A*) va a un hilo de cálculo aparte, así los vehículos no se
+     * detienen. Los resultados solo se aplican si ningún evento más nuevo los dejó obsoletos.
      */
     private void procesarEventosActualizados(List<EberthMEventoTrafico> nuevosEventos) {
         eventos.clear();
@@ -2255,25 +2870,42 @@ public class LuisYVentanaPrincipal {
         PieroGGrafoVial red = grafo;
         List<EberthMEventoTrafico> copiaEventos = List.copyOf(eventos);
         List<EberthMServicioMicro> copiaServicios = List.copyOf(rutasMicros);
+        // La lluvia es zonal: no toca el grafo, así que no obliga a recalcular los trayectos.
+        List<EberthMEventoTrafico> viales = copiaEventos.stream().filter(e -> !e.tipo().esZonal()).toList();
+        boolean recalcularTrayectos = !viales.equals(eventosViales) && !copiaServicios.isEmpty();
+        eventosViales = viales;
         long version = ++versionEventos;
+        // Un recálculo queda obsoleto solo si otro más nuevo lo reemplaza (no por un evento zonal).
+        long versionTrayectos = recalcularTrayectos ? ++versionRecalculoTrayectos : versionRecalculoTrayectos;
         long generacion = generacionCiudad;
         trabajoIniciado();
         motor.calcular(s -> {
             var tramos = EberthMAplicadorEventos.aplicar(red, copiaEventos);
             s.actualizarEventos(copiaEventos);
-            List<EberthMServicioMicro> recalculadas = EberthMGestorServicios.recalcular(red, copiaServicios);
-            s.actualizarServicios(recalculadas);
-            return new ResultadoEventos(tramos, recalculadas);
+            return tramos;
+        }).thenCompose(tramos -> {
+            if (!recalcularTrayectos) return CompletableFuture.completedFuture(new ResultadoEventos(tramos, null));
+            return CompletableFuture.supplyAsync(() -> EberthMGestorServicios.recalcular(red, copiaServicios), calculos)
+                    .thenCompose(recalculadas -> {
+                        if (generacion != generacionCiudad || versionTrayectos != versionRecalculoTrayectos) {
+                            return CompletableFuture.completedFuture(new ResultadoEventos(tramos, null));
+                        }
+                        return motor.ejecutar(s -> s.actualizarServicios(recalculadas))
+                                .thenApply(v -> new ResultadoEventos(tramos, recalculadas));
+                    });
         }).whenComplete((resultado, error) -> Platform.runLater(() -> {
             trabajoTerminado();
-            if (generacion != generacionCiudad || version != versionEventos) return;
+            if (generacion != generacionCiudad) return;
             if (error != null) {
                 LOG.log(Level.SEVERE, "Error al aplicar eventos", error);
                 lblEstado.setText("No se pudieron aplicar los eventos: " + error.getMessage());
                 return;
             }
+            if (resultado.servicios() != null) {
+                aplicarServiciosRecalculados(copiaServicios, resultado.servicios());
+            }
+            if (version != versionEventos) return; // un evento más nuevo dibujará sus propias vías
             mapa.setViasAfectadas(resultado.tramos().cerradas(), resultado.tramos().trancaderas());
-            aplicarServiciosRecalculados(copiaServicios, resultado.servicios());
             if (motor.instantanea().ejecutando()) {
                 lblEstado.setText("Eventos aplicados; simulación activa y rutas recalculadas.");
             } else {

@@ -31,15 +31,22 @@ public final class EberthMIndicePoi {
     private final double celdaLat = RADIO_CAMINATA_METROS / METROS_POR_GRADO;
     private final double celdaLon;
     private final boolean vacio;
+    private final List<EberthMPoi> todos;
 
     public EberthMIndicePoi(List<EberthMPoi> pois) {
         vacio = pois.isEmpty();
+        todos = List.copyOf(pois);
         double latMedia = pois.stream().mapToDouble(EberthMPoi::lat).average().orElse(0);
         celdaLon = celdaLat / Math.max(0.1, Math.cos(Math.toRadians(latMedia)));
         for (EberthMPoi poi : pois) {
             celdas.computeIfAbsent(clave(celda(poi.lon(), celdaLon), celda(poi.lat(), celdaLat)),
                     k -> new ArrayList<>()).add(poi);
         }
+    }
+
+    /** Todos los POIs del índice: posibles orígenes y destinos de la demanda. */
+    public List<EberthMPoi> todos() {
+        return todos;
     }
 
     public boolean estaVacio() {

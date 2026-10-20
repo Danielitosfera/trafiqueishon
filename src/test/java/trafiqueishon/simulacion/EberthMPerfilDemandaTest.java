@@ -54,7 +54,7 @@ class EberthMPerfilDemandaTest {
 
     @Test
     void elPerfilGeneralConservaElComportamientoLaboralYReduceElFinDeSemana() {
-        assertEquals(EberthMPerfilHoraPunta.factorDemanda(10 * 60),
+        assertEquals(1.0,
                 EberthMPerfilDemanda.factorGeneral(10 * 60, LABORAL), 1e-9);
         assertEquals(0.70, EberthMPerfilDemanda.factorGeneral(10 * 60, SABADO), 1e-9);
         assertTrue(EberthMPerfilDemanda.factorGeneral(18 * 60, FERIADO)

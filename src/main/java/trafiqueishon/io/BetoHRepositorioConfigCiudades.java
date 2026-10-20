@@ -16,11 +16,35 @@ import java.util.Map;
 /** Guarda los {@link EberthMParametrosCiudad} de cada ciudad en {@code config_ciudades.json}. */
 public final class BetoHRepositorioConfigCiudades {
 
-    private record ParametrosGuardados(long poblacionTotal, double porcentajeTransportePublico,
+    /** Forma serializable de los parámetros de una ciudad (también la usa el proyecto guardado). */
+    public record ParametrosGuardados(long poblacionTotal, double porcentajeTransportePublico,
                                        String horasPunta, double probabilidadLluvia,
                                        String tasaAccidentes, Double porcentajeEstudiantes,
                                        Double porcentajeTrabajadores, Double porcentajeJubilados,
-                                       Integer capacidadMaximaParada, String horasPuntaFinSemana) {}
+                                       Integer capacidadMaximaParada, String horasPuntaFinSemana) {
+        public static ParametrosGuardados desde(EberthMParametrosCiudad p) {
+            return new ParametrosGuardados(p.getPoblacionTotal(), p.getPorcentajeTransportePublico(),
+                    p.getHorasPunta(), p.getProbabilidadLluvia(), p.getTasaAccidentes().name(),
+                    p.getPorcentajeEstudiantes(), p.getPorcentajeTrabajadores(),
+                    p.getPorcentajeJubilados(), p.getCapacidadMaximaParada(),
+                    p.getHorasPuntaFinSemana());
+        }
+
+        /** @throws IllegalArgumentException si algún valor no es válido */
+        public EberthMParametrosCiudad aParametros() {
+            var p = new EberthMParametrosCiudad(poblacionTotal, porcentajeTransportePublico,
+                    horasPunta, probabilidadLluvia,
+                    EberthMParametrosCiudad.TasaAccidentes.valueOf(tasaAccidentes));
+            // Archivos anteriores no traen estos campos: conservan los valores por defecto.
+            if (porcentajeEstudiantes != null && porcentajeTrabajadores != null
+                    && porcentajeJubilados != null) {
+                p.setDemografia(porcentajeEstudiantes, porcentajeTrabajadores, porcentajeJubilados);
+            }
+            if (capacidadMaximaParada != null) p.setCapacidadMaximaParada(capacidadMaximaParada);
+            if (horasPuntaFinSemana != null) p.setHorasPuntaFinSemana(horasPuntaFinSemana);
+            return p;
+        }
+    }
 
     private static final TypeReference<Map<String, ParametrosGuardados>> TIPO =
             new TypeReference<>() {};
@@ -49,17 +73,7 @@ public final class BetoHRepositorioConfigCiudades {
         if (guardados == null) return resultado;
         guardados.forEach((id, g) -> {
             try {
-                var p = new EberthMParametrosCiudad(g.poblacionTotal(),
-                        g.porcentajeTransportePublico(), g.horasPunta(), g.probabilidadLluvia(),
-                        EberthMParametrosCiudad.TasaAccidentes.valueOf(g.tasaAccidentes()));
-                // Archivos anteriores no traen estos campos: conservan los valores por defecto.
-                if (g.porcentajeEstudiantes() != null && g.porcentajeTrabajadores() != null
-                        && g.porcentajeJubilados() != null) {
-                    p.setDemografia(g.porcentajeEstudiantes(), g.porcentajeTrabajadores(),
-                            g.porcentajeJubilados());
-                }
-                if (g.capacidadMaximaParada() != null) p.setCapacidadMaximaParada(g.capacidadMaximaParada());
-                if (g.horasPuntaFinSemana() != null) p.setHorasPuntaFinSemana(g.horasPuntaFinSemana());
+                var p = g.aParametros();
                 resultado.put(id, p);
             } catch (RuntimeException ex) {
                 // entrada corrupta: esa ciudad vuelve a sus valores por defecto
@@ -70,11 +84,7 @@ public final class BetoHRepositorioConfigCiudades {
 
     public void guardar(Map<String, EberthMParametrosCiudad> parametros) throws IOException {
         Map<String, ParametrosGuardados> salida = new LinkedHashMap<>();
-        parametros.forEach((id, p) -> salida.put(id, new ParametrosGuardados(p.getPoblacionTotal(),
-                p.getPorcentajeTransportePublico(), p.getHorasPunta(), p.getProbabilidadLluvia(),
-                p.getTasaAccidentes().name(), p.getPorcentajeEstudiantes(),
-                p.getPorcentajeTrabajadores(), p.getPorcentajeJubilados(),
-                p.getCapacidadMaximaParada(), p.getHorasPuntaFinSemana())));
+        parametros.forEach((id, p) -> salida.put(id, ParametrosGuardados.desde(p)));
         Files.createDirectories(archivo.getParent());
         Path temporal = Files.createTempFile(archivo.getParent(), "config-ciudades-", ".tmp");
         try {

@@ -39,6 +39,13 @@ public final class BetoHRepositorioServiciosMicro {
                 Path.of(System.getProperty("user.home"), ".trafiqueishon", nombre));
     }
 
+    /** Borra las rutas guardadas de una ciudad eliminada; no toca Juliaca (su mapa viene en el jar). */
+    public static void eliminarDeCiudad(trafiqueishon.geo.PieroGCiudadMapa ciudad) throws IOException {
+        if (ciudad.equals(trafiqueishon.geo.PieroGCiudadMapa.JULIACA)) return;
+        Files.deleteIfExists(Path.of(System.getProperty("user.home"), ".trafiqueishon",
+                "rutas-micros-" + ciudad.id() + ".json"));
+    }
+
     public List<RutaGuardada> cargar() throws IOException {
         if (!Files.exists(archivo)) return List.of();
         try (var entrada = Files.newInputStream(archivo)) {
@@ -53,14 +60,7 @@ public final class BetoHRepositorioServiciosMicro {
     }
 
     public void guardar(List<EberthMServicioMicro> servicios) throws IOException {
-        List<RutaGuardada> rutas = servicios.stream().map(servicio -> new RutaGuardada(
-                servicio.id(), servicio.nombre(),
-                servicio.trayecto().puntos(),
-                servicio.frecuenciaMinutos(), servicio.unidadesDisponibles(),
-                servicio.pasajerosEsperando(), servicio.color(),
-                servicio.retorno().name(),
-                servicio.retorno() == trafiqueishon.simulacion.EberthMTipoRetorno.MANUAL
-                        ? servicio.trayectoVuelta().puntos() : null)).toList();
+        List<RutaGuardada> rutas = servicios.stream().map(BetoHRepositorioServiciosMicro::aGuardada).toList();
         Files.createDirectories(archivo.getParent());
         Path temporal = Files.createTempFile(archivo.getParent(), "rutas-micros-", ".tmp");
         try {
@@ -82,10 +82,24 @@ public final class BetoHRepositorioServiciosMicro {
         return archivo;
     }
 
+    /** Forma serializable de un servicio: solo paraderos y datos; los tramos se recalculan al cargar. */
+    public static RutaGuardada aGuardada(EberthMServicioMicro servicio) {
+        return new RutaGuardada(
+                servicio.id(), servicio.nombre(),
+                servicio.trayecto().puntos(),
+                servicio.frecuenciaMinutos(), servicio.unidadesDisponibles(),
+                servicio.pasajerosEsperando(), servicio.color(),
+                servicio.retorno().name(),
+                servicio.retorno() == trafiqueishon.simulacion.EberthMTipoRetorno.MANUAL
+                        ? servicio.trayectoVuelta().puntos() : null,
+                servicio.frecuenciaPuntaMinutos());
+    }
+
     public record RutaGuardada(String id, String nombre, List<LuisYPuntoImportante> paraderos,
                                int frecuenciaMinutos, int unidadesDisponibles,
                                int pasajerosEsperando, String color,
-                               String retorno, List<LuisYPuntoImportante> paraderosVuelta) {
+                               String retorno, List<LuisYPuntoImportante> paraderosVuelta,
+                               int frecuenciaPuntaMinutos) {
         public RutaGuardada {
             paraderos = paraderos == null ? List.of() : List.copyOf(paraderos);
             paraderosVuelta = paraderosVuelta == null ? List.of() : List.copyOf(paraderosVuelta);
@@ -96,7 +110,16 @@ public final class BetoHRepositorioServiciosMicro {
                             int frecuenciaMinutos, int unidadesDisponibles,
                             int pasajerosEsperando, String color) {
             this(id, nombre, paraderos, frecuenciaMinutos, unidadesDisponibles,
-                    pasajerosEsperando, color, null, null);
+                    pasajerosEsperando, color, null, null, 0);
+        }
+
+        /** Formato anterior a la frecuencia de hora punta propia ({@code 0} = derivada). */
+        public RutaGuardada(String id, String nombre, List<LuisYPuntoImportante> paraderos,
+                            int frecuenciaMinutos, int unidadesDisponibles,
+                            int pasajerosEsperando, String color,
+                            String retorno, List<LuisYPuntoImportante> paraderosVuelta) {
+            this(id, nombre, paraderos, frecuenciaMinutos, unidadesDisponibles,
+                    pasajerosEsperando, color, retorno, paraderosVuelta, 0);
         }
     }
 }

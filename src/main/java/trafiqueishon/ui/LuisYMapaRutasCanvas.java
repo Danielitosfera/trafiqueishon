@@ -225,6 +225,7 @@ public class LuisYMapaRutasCanvas extends Pane {
     private java.util.function.Consumer<String> onInfoMapa;
     private String ultimaInfoMapa;
     private java.util.function.BiConsumer<Double, Double> onClic;
+    private java.util.function.Predicate<double[]> onDobleClic;
 
     private final AnimationTimer renderizador = new AnimationTimer() {
         @Override
@@ -300,7 +301,12 @@ public class LuisYMapaRutasCanvas extends Pane {
 
         setOnMouseClicked(e -> {
             if (!cargado || !e.isStillSincePress()) return;
-            if (e.getClickCount() == 2) { resetVista(); return; }
+            if (e.getClickCount() == 2) {
+                // Si la ventana activa usa el doble clic (colocar un evento), no se reencuadra.
+                if (onDobleClic != null && onDobleClic.test(pantallaALonLat(e.getX(), e.getY()))) return;
+                resetVista();
+                return;
+            }
             if (onClic != null) {
                 double[] norm = pantallaANormalizado(e.getX(), e.getY());
                 double[] lonlat = normalizadoALonLat(norm[0], norm[1]);
@@ -1858,6 +1864,14 @@ public class LuisYMapaRutasCanvas extends Pane {
 
     public void setOnError(java.util.function.Consumer<String> cb) { onError = cb; }
     public void setOnClic(java.util.function.BiConsumer<Double, Double> cb) { onClic = cb; }
+
+    /** Doble clic con {@code {lon, lat}}; devuelve {@code true} si lo consumió (no se reencuadra). */
+    public void setOnDobleClic(java.util.function.Predicate<double[]> cb) { onDobleClic = cb; }
+
+    private double[] pantallaALonLat(double x, double y) {
+        double[] norm = pantallaANormalizado(x, y);
+        return normalizadoALonLat(norm[0], norm[1]);
+    }
 
     public void setOnMouseMoveCallback(java.util.function.Consumer<double[]> cb) {
         addEventFilter(javafx.scene.input.MouseEvent.MOUSE_MOVED, e -> {

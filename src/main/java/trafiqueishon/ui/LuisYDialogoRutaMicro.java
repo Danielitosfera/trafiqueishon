@@ -30,7 +30,7 @@ final class LuisYDialogoRutaMicro {
     /** Valores introducidos por el usuario, sin validar. */
     record Datos(String nombre, List<LuisYPuntoImportante> paraderos, boolean optimizarOrden,
                  EberthMTipoRetorno retorno, List<LuisYPuntoImportante> vueltaManual,
-                 int frecuenciaMin, int unidades, int pasajeros, String colorHex) {}
+                 int frecuenciaMin, int unidades, String colorHex) {}
 
     static final int MAX_UNIDADES_RUTA = 500;
     static final int MAX_FRECUENCIA_MIN = 120;
@@ -41,12 +41,11 @@ final class LuisYDialogoRutaMicro {
     /**
      * @param estilizar          aplica el tema de la ventana al diálogo
      * @param alError            muestra un error (título, mensaje)
-     * @param pasajerosPorDefecto demanda inicial al crear una ruta
      * @return los datos si el usuario pulsó «Guardar ruta»; vacío si canceló o no hay flota libre
      */
     static Optional<Datos> mostrar(Consumer<Dialog<?>> estilizar, BiConsumer<String, String> alError,
             List<LuisYPuntoImportante> puntos, List<EberthMServicioMicro> rutas,
-            EberthMServicioMicro existente, int pasajerosPorDefecto) {
+            EberthMServicioMicro existente) {
         Dialog<Boolean> dialogo = new Dialog<>();
         estilizar.accept(dialogo);
         dialogo.setTitle(existente == null ? "Crear ruta de micro" : "Editar ruta de micro");
@@ -77,11 +76,7 @@ final class LuisYDialogoRutaMicro {
         Spinner<Integer> unidades = new Spinner<>(
                 new SpinnerValueFactory.IntegerSpinnerValueFactory(1, maxUnidades, unidadesIniciales));
         unidades.setPrefWidth(125);
-        Spinner<Integer> pasajeros = new Spinner<>(new SpinnerValueFactory.IntegerSpinnerValueFactory(
-                MIN_PASAJEROS, EberthMServicioMicro.MAX_PASAJEROS,
-                Math.max(MIN_PASAJEROS, existente == null ? pasajerosPorDefecto
-                        : existente.pasajerosEsperando())));
-        for (Spinner<Integer> campo : List.of(frecuencia, unidades, pasajeros)) {
+        for (Spinner<Integer> campo : List.of(frecuencia, unidades)) {
             campo.setEditable(true);
             campo.focusedProperty().addListener((o, antes, ahora) -> {
                 if (!ahora) confirmarTexto(campo);
@@ -201,24 +196,23 @@ final class LuisYDialogoRutaMicro {
         contenido.addRow(0, new Label("Nombre"), nombre);
         contenido.addRow(1, new Label("Frecuencia (min)"), frecuencia);
         contenido.addRow(2, new Label("Unidades"), unidades);
-        contenido.addRow(3, new Label("Demanda"), pasajeros);
-        contenido.addRow(4, new Label("Color único"), color);
-        contenido.add(new Label("Incluye y ordena los paraderos (mínimo 2)"), 0, 5, 2, 1);
-        contenido.add(selectorParaderos, 0, 6, 2, 1);
-        contenido.addRow(7, new Label("Tipo de Retorno"), tipoRetorno);
-        contenido.add(seccionVuelta, 0, 8, 2, 1);
-        contenido.add(optimizarOrden, 0, 9, 2, 1);
+        contenido.addRow(3, new Label("Color único"), color);
+        contenido.add(new Label("Incluye y ordena los paraderos (mínimo 2)"), 0, 4, 2, 1);
+        contenido.add(selectorParaderos, 0, 5, 2, 1);
+        contenido.addRow(6, new Label("Tipo de Retorno"), tipoRetorno);
+        contenido.add(seccionVuelta, 0, 7, 2, 1);
+        contenido.add(optimizarOrden, 0, 8, 2, 1);
         dialogo.getDialogPane().setContent(contenido);
         dialogo.setResultConverter(b -> b == guardar);
 
         Optional<Boolean> confirmado = dialogo.showAndWait();
         if (confirmado.isEmpty() || !confirmado.get()) return Optional.empty();
         // Un valor tecleado y no confirmado con Enter no habría llegado al spinner.
-        for (Spinner<Integer> campo : List.of(frecuencia, unidades, pasajeros)) confirmarTexto(campo);
+        for (Spinner<Integer> campo : List.of(frecuencia, unidades)) confirmarTexto(campo);
         return Optional.of(new Datos(nombre.getText().trim(), List.copyOf(secuencia.getItems()),
                 optimizarOrden.isSelected(), tipoRetorno.getValue(),
                 List.copyOf(secuenciaVuelta.getItems()), frecuencia.getValue(), unidades.getValue(),
-                pasajeros.getValue(), colorHex(color.getValue())));
+                colorHex(color.getValue())));
     }
 
     /** Pasa al valor del spinner el texto escrito en su editor; si no es válido lo descarta. */

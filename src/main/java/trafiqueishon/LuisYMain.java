@@ -21,11 +21,10 @@ public class LuisYMain extends Application {
         stage.setScene(scene);
         stage.setMinWidth(980);
         stage.setMinHeight(640);
-        stage.setOnCloseRequest(e -> ventana.cerrar());
+        stage.setOnCloseRequest(e -> {
+            if (ventana.confirmarCierre()) ventana.cerrar();
+            else e.consume();
+        });
         stage.show();
-    }
-
-    public static void main(String[] args) {
-        launch(args);
     }
 }

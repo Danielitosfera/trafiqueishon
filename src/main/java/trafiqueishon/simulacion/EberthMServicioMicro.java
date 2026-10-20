@@ -13,7 +13,8 @@ public record EberthMServicioMicro(
         int unidadesDisponibles,
         int pasajerosEsperando,
         String color,
-        EberthMTipoRetorno retorno) {
+        EberthMTipoRetorno retorno,
+        int frecuenciaPuntaMinutos) {
 
     public static final int MAX_UNIDADES = 6_000;
     /** Demanda base máxima por ruta (pasajeros por hora que llegan a las paradas). */
@@ -27,8 +28,25 @@ public record EberthMServicioMicro(
                 pasajerosEsperando, color, EberthMTipoRetorno.INVERSO);
     }
 
+    /** Frecuencia de hora punta derivada (50 % más rápida) para servicios sin valor propio. */
+    public static int frecuenciaPuntaPorDefecto(int frecuenciaMinutos) {
+        return Math.max(1, (int) Math.round(frecuenciaMinutos / 1.5));
+    }
+
+    /** Con retorno y frecuencia de hora punta derivada de la normal. */
+    public EberthMServicioMicro(String id, String nombre, LuisYTrayecto trayecto,
+                                LuisYTrayecto trayectoVuelta, int frecuenciaMinutos,
+                                int unidadesDisponibles, int pasajerosEsperando, String color,
+                                EberthMTipoRetorno retorno) {
+        this(id, nombre, trayecto, trayectoVuelta, frecuenciaMinutos, unidadesDisponibles,
+                pasajerosEsperando, color, retorno, 0);
+    }
+
     public EberthMServicioMicro {
         if (retorno == null) retorno = EberthMTipoRetorno.INVERSO;
+        // 0 = sin valor propio. La de punta nunca es más lenta que la normal.
+        if (frecuenciaPuntaMinutos <= 0) frecuenciaPuntaMinutos = frecuenciaPuntaPorDefecto(frecuenciaMinutos);
+        frecuenciaPuntaMinutos = Math.min(frecuenciaPuntaMinutos, Math.max(1, frecuenciaMinutos));
         if (id == null || id.isBlank() || nombre == null || nombre.isBlank()
                 || frecuenciaMinutos < 1 || frecuenciaMinutos > 180
                 || unidadesDisponibles < 1 || unidadesDisponibles > MAX_UNIDADES

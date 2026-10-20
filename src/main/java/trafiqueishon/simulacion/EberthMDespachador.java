@@ -26,11 +26,19 @@ public final class EberthMDespachador {
 
     /** @param escalaDemanda multiplicador global de la demanda base del servicio (1 o más) */
     public EberthMDespachador(EberthMServicioMicro servicio, int escalaDemanda) {
+        this(servicio, servicio == null ? 0 : servicio.pasajerosEsperando(), escalaDemanda);
+    }
+
+    /**
+     * @param demandaBase  pasajeros por hora de la ruta (derivados de la población de la ciudad)
+     * @param escalaDemanda multiplicador global de la demanda (1 o más)
+     */
+    public EberthMDespachador(EberthMServicioMicro servicio, long demandaBase, int escalaDemanda) {
         this.servicio = java.util.Objects.requireNonNull(servicio);
         if (escalaDemanda < 1) throw new IllegalArgumentException("La escala debe ser 1 o más.");
-        int demandaBase = (int) Math.min(Integer.MAX_VALUE,
-                (long) servicio.pasajerosEsperando() * escalaDemanda);
-        this.demanda = new EberthMDemandaPasajeros(demandaBase, servicio.unidadesDisponibles());
+        if (demandaBase < 0) throw new IllegalArgumentException("La demanda base no puede ser negativa.");
+        int demandaEscalada = (int) Math.min(Integer.MAX_VALUE, demandaBase * escalaDemanda);
+        this.demanda = new EberthMDemandaPasajeros(demandaEscalada, servicio.unidadesDisponibles());
     }
 
     /**
@@ -39,15 +47,31 @@ public final class EberthMDespachador {
      *
      * @throws ArithmeticException si la demanda acumulada desborda un entero
      */
-    public Optional<Salida> siguienteSalida(double segundosTranscurridos, int minutoDelDia) {
+    public Optional<Salida> siguienteSalida(double segundosTranscurridos, double multiplicadorDemanda) {
+        return siguienteSalida(segundosTranscurridos, multiplicadorDemanda, false);
+    }
+
+    /**
+     * Igual que {@link #siguienteSalida(double, double)}; el intervalo hasta la siguiente
+     * salida es {@code frecuenciaPuntaMinutos} en hora punta y {@code frecuenciaMinutos} fuera de ella.
+     */
+    public Optional<Salida> siguienteSalida(double segundosTranscurridos, double multiplicadorDemanda,
+                                            boolean horaPunta) {
         if (terminado() || proximoDespacho > segundosTranscurridos) return Optional.empty();
-        int abordados = demanda.abordarEnSalida(minutoDelDia);
+        int abordados = demanda.abordarEnSalida(multiplicadorDemanda);
         boolean saleDelFinal = servicio.tieneRetorno() && unidadesDespachadas % 2 == 1;
         Salida salida = new Salida(unidadesDespachadas, saleDelFinal, abordados);
         unidadesDespachadas++;
         boolean primeraConMas = unidadesDespachadas == 1 && servicio.unidadesDisponibles() > 1;
-        if (!primeraConMas) proximoDespacho += servicio.frecuenciaMinutos() * 60.0;
+        if (!primeraConMas) {
+            proximoDespacho += frecuenciaVigenteMinutos(horaPunta) * 60.0;
+        }
         return Optional.of(salida);
+    }
+
+    /** Frecuencia de salida vigente: la de hora punta o la normal. */
+    public int frecuenciaVigenteMinutos(boolean horaPunta) {
+        return horaPunta ? servicio.frecuenciaPuntaMinutos() : servicio.frecuenciaMinutos();
     }
 
     /** Marca el servicio como terminado (p. ej. tras un error aislado). */

@@ -2,7 +2,8 @@ package trafiqueishon.simulacion;
 
 /**
  * Genera la demanda de pasajeros de un servicio de micro y decide cuántos
- * abordan en cada salida. Aplica el perfil horario de {@link EberthMPerfilHoraPunta}.
+ * abordan en cada salida. El multiplicador horario lo fija
+ * {@link EberthMPerfilHoraPunta#multiplicadorDemanda}, el mismo que usan las paradas.
  */
 public final class EberthMDemandaPasajeros {
 
@@ -24,14 +25,14 @@ public final class EberthMDemandaPasajeros {
     }
 
     /**
-     * Suma la demanda nueva de la franja horaria y devuelve cuántos pasajeros
-     * abordan en esta salida.
+     * Suma la demanda nueva (demanda por salida × multiplicador horario) y devuelve
+     * cuántos pasajeros abordan en esta salida.
      *
+     * @param multiplicadorDemanda multiplicador de {@link EberthMPerfilHoraPunta#multiplicadorDemanda}
      * @throws ArithmeticException si los pendientes desbordan un entero
      */
-    public int abordarEnSalida(int minutoDelDia) {
-        int demandaNueva = (int) Math.round(demandaPorSalida
-                * EberthMPerfilHoraPunta.factorDemanda(minutoDelDia));
+    public int abordarEnSalida(double multiplicadorDemanda) {
+        int demandaNueva = (int) Math.round(demandaPorSalida * multiplicadorDemanda);
         pendientes = Math.addExact(pendientes, demandaNueva);
         int abordados = Math.min(ABORDAJE_MAXIMO, pendientes);
         pendientes -= abordados;

@@ -58,6 +58,7 @@ public final class EberthMPerfilDemanda {
 
     /** Factor de una parada sin POIs cercanos: el perfil general de siempre, ajustado al día. */
     public static double factorGeneral(int minutoDelDia, EberthMTipoDia dia) {
-        return dia.aplanar(EberthMPerfilHoraPunta.factorDemanda(minutoDelDia)) * dia.demandaGlobal();
+        return dia.aplanar(EberthMPerfilHoraPunta.multiplicadorDemanda(null, minutoDelDia, dia, false))
+                * dia.demandaGlobal();
     }
 }

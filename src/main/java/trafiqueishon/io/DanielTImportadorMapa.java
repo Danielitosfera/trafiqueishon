@@ -23,6 +23,9 @@ public final class DanielTImportadorMapa {
      */
     public record Resultado(Path guardado, int encontrados) {}
 
+    public static final String MENSAJE_INVALIDO =
+            "El archivo seleccionado no es un GeoJSON válido o está dañado";
+
     private final BetoHFuenteMapa fuente;
     private final BetoHLectorPuntosGeoJson lectorGeoJson = new BetoHLectorPuntosGeoJson();
     private final BetoHLectorPuntosJson lectorJson = new BetoHLectorPuntosJson();
@@ -64,13 +67,21 @@ public final class DanielTImportadorMapa {
 
     private static void validarGeoJson(Path archivo) throws IOException {
         byte[] inicio;
-        try (InputStream in = Files.newInputStream(archivo)) {
-            inicio = in.readNBytes(1 << 16);
+        byte[] fin;
+        try (java.nio.channels.SeekableByteChannel canal = Files.newByteChannel(archivo)) {
+            java.nio.ByteBuffer ini = java.nio.ByteBuffer.allocate(1 << 16);
+            canal.read(ini);
+            inicio = java.util.Arrays.copyOf(ini.array(), ini.position());
+            long cola = Math.max(0, canal.size() - 1024);
+            canal.position(cola);
+            java.nio.ByteBuffer fn = java.nio.ByteBuffer.allocate(1024);
+            canal.read(fn);
+            fin = java.util.Arrays.copyOf(fn.array(), fn.position());
         }
         String texto = new String(inicio, java.nio.charset.StandardCharsets.UTF_8).stripLeading();
-        if (!texto.startsWith("{") || !texto.contains("\"FeatureCollection\"")) {
-            throw new IOException("«" + archivo.getFileName() + "» no es un GeoJSON (FeatureCollection). "
-                    + "Exporta desde overpass-turbo como GeoJSON, no como JSON crudo.");
+        String cola = new String(fin, java.nio.charset.StandardCharsets.UTF_8).stripTrailing();
+        if (!texto.startsWith("{") || !texto.contains("\"FeatureCollection\"") || !cola.endsWith("}")) {
+            throw new IOException(MENSAJE_INVALIDO + ": «" + archivo.getFileName() + "».");
         }
     }
 

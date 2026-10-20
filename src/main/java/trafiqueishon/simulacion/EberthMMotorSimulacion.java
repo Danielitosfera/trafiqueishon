@@ -34,9 +34,20 @@ public final class EberthMMotorSimulacion implements AutoCloseable {
                               boolean haySimulacion, int horaMinutos, double segundosSimulados,
                               int pasajerosTransportados, double ocupacionPromedio,
                               int vehiculosConIncidencia, long version,
-                              List<EberthMParadaEspera> paradas) {
+                              List<EberthMParadaEspera> paradas,
+                              double esperaPromedioMin, int pasajerosAbandonaron) {
         public static final Instantanea VACIA =
                 new Instantanea(List.of(), false, false, 0, 0, 0, 0, 0, 0, List.of());
+
+        public Instantanea(List<EberthMPosicionVehiculo> vehiculos, boolean ejecutando,
+                           boolean haySimulacion, int horaMinutos, double segundosSimulados,
+                           int pasajerosTransportados, double ocupacionPromedio,
+                           int vehiculosConIncidencia, long version,
+                           List<EberthMParadaEspera> paradas) {
+            this(vehiculos, ejecutando, haySimulacion, horaMinutos, segundosSimulados,
+                    pasajerosTransportados, ocupacionPromedio, vehiculosConIncidencia, version,
+                    paradas, 0, 0);
+        }
     }
 
     private final EberthMSimuladorBuses simulador;
@@ -149,7 +160,9 @@ public final class EberthMMotorSimulacion implements AutoCloseable {
                 simulador.ocupacionPromedio(),
                 simulador.vehiculosConIncidencia(),
                 ++version,
-                simulador.paradasEnEspera());
+                simulador.paradasEnEspera(),
+                simulador.esperaPromedioMinutos(),
+                simulador.pasajerosAbandonaron());
     }
 
     @Override

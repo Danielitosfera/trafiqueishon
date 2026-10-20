@@ -296,6 +296,39 @@ class EberthMSimuladorBusesTest {
     }
 
     @Test
+    void quienEsperaMasDeQuinceMinutosSeRindeYLiberaLaParada() {
+        PieroGVia directa = via("directa", "directa", new double[]{-70.0, -15.0},
+                new double[]{-69.9995, -15.0}, new double[]{-69.999, -15.0});
+        PieroGProyector proyector = new PieroGProyector();
+        proyector.preProyectar(List.of(directa));
+        PieroGGrafoVial grafo = new PieroGGrafoVial();
+        grafo.construir(List.of(directa), proyector);
+        List<PieroGEdge> ida = grafo.getEdges().stream()
+                .filter(e -> e.origen.lon < e.destino.lon).toList();
+        LuisYTrayecto trayectoIda = new LuisYTrayecto("ida", "Ida", "Empresa",
+                List.of(new LuisYPuntoImportante("a", "A", -70, -15),
+                        new LuisYPuntoImportante("c", "C", -69.999, -15)),
+                ida, 100, 100, "SERVICIO");
+        EberthMServicioMicro servicio = new EberthMServicioMicro("m1", "Micro", trayectoIda,
+                trayectoIda, 180, 1, 0, "#39FF14");
+        EberthMSimuladorBuses simulador = new EberthMSimuladorBuses();
+        simulador.configurarGrafo(grafo);
+        var ciudad = EberthMParametrosCiudad.porDefecto(trafiqueishon.geo.PieroGCiudadMapa.JULIACA);
+        ciudad.setCapacidadMaximaParada(10_000);
+        // 144 000 × 100 % ÷ 10 (escala) ÷ 1440 min = 10 pasajeros/min entre 2 ubicaciones = 5 c/u.
+        ciudad.setPoblacionTotal(144_000);
+        ciudad.setPorcentajeTransportePublico(100);
+        simulador.setParametrosCiudad(ciudad);
+        simulador.iniciar(List.of(servicio), 10, 0); // 10:00, fuera de hora punta
+
+        avanzar(simulador, 60 * 60);
+        int max = simulador.paradasEnEspera().stream()
+                .mapToInt(EberthMParadaEspera::esperando).max().orElse(0);
+        // Sin paciencia llegarían a 300; con 15 min de paciencia nunca pasan de 5 × 15.
+        assertTrue(max > 0 && max <= 75, "esperando: " + max);
+    }
+
+    @Test
     void conPoisLosPasajerosBajanAlPasarCercaYElBusTerminaVacio() {
         PieroGVia directa = via("directa", "directa",
                 new double[]{-70.0, -15.0}, new double[]{-69.998, -15.0},
@@ -425,11 +458,11 @@ class EberthMSimuladorBusesTest {
 
     @Test
     void ajustaLaDemandaPorFranjaHoraria() {
-        assertEquals(2.5, EberthMPerfilHoraPunta.factorDemanda(7 * 60));
-        assertEquals(1.8, EberthMPerfilHoraPunta.factorDemanda(12 * 60));
-        assertEquals(2.8, EberthMPerfilHoraPunta.factorDemanda(18 * 60));
-        assertEquals(0.2, EberthMPerfilHoraPunta.factorDemanda(23 * 60));
-        assertEquals(1.0, EberthMPerfilHoraPunta.factorDemanda(10 * 60));
+        EberthMParametrosCiudad ciudad = new EberthMParametrosCiudad(100_000, 50, "07:00-09:00", 0,
+                EberthMParametrosCiudad.TasaAccidentes.BAJA);
+        assertEquals(2.5, EberthMPerfilHoraPunta.multiplicadorDemanda(ciudad, 7, 30));
+        assertEquals(1.0, EberthMPerfilHoraPunta.multiplicadorDemanda(ciudad, 10, 0));
+        assertEquals(0.1, EberthMPerfilHoraPunta.multiplicadorDemanda(ciudad, 23, 0));
     }
 
     @Test
@@ -547,5 +580,19 @@ class EberthMSimuladorBusesTest {
                 List.of(new LuisYPuntoImportante("fin", "Destino", -69.9, -15),
                         new LuisYPuntoImportante("inicio", "Paradero", -70, -15)),
                 List.of(edge), 10_000, edge.costoBase, "SERVICIO_VUELTA");
+    }
+
+    @Test
+    void laDemandaSigueLaPoblacionYLaHoraPuntaConfiguradas() {
+        EberthMParametrosCiudad ciudad = new EberthMParametrosCiudad(144_000, 100, "10:00-11:00", 0,
+                EberthMParametrosCiudad.TasaAccidentes.BAJA);
+        assertEquals(2.5, EberthMPerfilHoraPunta.multiplicadorDemanda(ciudad, 10 * 60 + 30,
+                EberthMTipoDia.LABORAL, false), 1e-9);
+        assertEquals(1.0, EberthMPerfilHoraPunta.multiplicadorDemanda(ciudad, 15 * 60,
+                EberthMTipoDia.LABORAL, false), 1e-9);
+        assertEquals(0.1, EberthMPerfilHoraPunta.multiplicadorDemanda(ciudad, 60,
+                EberthMTipoDia.LABORAL, false), 1e-9);
+        assertEquals(2.5, EberthMPerfilHoraPunta.multiplicadorDemanda(ciudad, 60,
+                EberthMTipoDia.LABORAL, true), 1e-9);
     }
 }

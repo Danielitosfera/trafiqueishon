@@ -24,13 +24,12 @@ public final class LuisYPaletaColores {
         if (tipo == null) return "#F9E2AF";
         return switch (tipo) {
             case TERMINAL, TRANSPORTE -> "#00B8D9";
-            case EDUCACION -> "#7C4DFF";
-            case SALUD -> "#FF4D6D";
-            case MERCADO, COMERCIO -> "#FF9F1C";
-            case PLAZA, PARQUE -> "#2EC4B6";
-            case TURISMO -> "#E040FB";
-            case DEPORTE -> "#8BC34A";
-            case INSTITUCION -> "#90A4AE";
+            // Mismas categorías que usa la demanda (EberthMCategoriaPoi).
+            case EDUCACION -> "#2979FF";                       // azul
+            case MERCADO, COMERCIO -> "#FFD600";               // amarillo
+            case SALUD -> "#FF1744";                           // rojo
+            case TURISMO, PARQUE, PLAZA, DEPORTE -> "#00C853"; // verde (ocio)
+            case INSTITUCION -> "#FF9100";                     // naranja (trabajo)
             case ORIGEN -> "#39FF14";
             case DESTINO -> "#FF3B5C";
             default -> "#F9E2AF";

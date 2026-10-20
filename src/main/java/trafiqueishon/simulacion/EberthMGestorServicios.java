@@ -32,28 +32,31 @@ public final class EberthMGestorServicios {
 
     private EberthMGestorServicios() {}
 
-    /** Recalcula ida y vuelta de cada servicio con los costos actuales del grafo. */
+    /**
+     * Recalcula ida y vuelta de cada servicio con los costos actuales del grafo. Solo lee la red
+     * (cada servicio usa su propio calculador), así que los servicios se calculan en paralelo y
+     * puede llamarse fuera del hilo del motor. El orden de la lista se conserva.
+     */
     public static List<EberthMServicioMicro> recalcular(PieroGGrafoVial red,
                                                         List<EberthMServicioMicro> servicios) {
-        LuisYCalculadorTrayecto calc = new LuisYCalculadorTrayecto(red);
-        List<EberthMServicioMicro> actualizadas = new ArrayList<>();
-        for (EberthMServicioMicro ruta : servicios) {
+        return servicios.parallelStream().map(ruta -> {
             try {
+                LuisYCalculadorTrayecto calc = new LuisYCalculadorTrayecto(red);
                 LuisYTrayecto ida = calc.calcular(ruta.id(), ruta.nombre(),
                         ruta.trayecto().empresa(), "SERVICIO", ruta.trayecto().puntos());
                 LuisYTrayecto vuelta = calc.calcular(ruta.id() + "-vuelta",
                         ruta.nombre() + " · vuelta", ruta.trayectoVuelta().empresa(),
                         "SERVICIO_VUELTA", ruta.trayectoVuelta().puntos());
-                actualizadas.add(new EberthMServicioMicro(ruta.id(), ruta.nombre(), ida, vuelta,
+                return new EberthMServicioMicro(ruta.id(), ruta.nombre(), ida, vuelta,
                         ruta.frecuenciaMinutos(), ruta.unidadesDisponibles(),
-                        ruta.pasajerosEsperando(), ruta.color(), ruta.retorno()));
+                        ruta.pasajerosEsperando(), ruta.color(), ruta.retorno(),
+                        ruta.frecuenciaPuntaMinutos());
             } catch (RuntimeException ex) {
                 LOG.log(Level.WARNING, "No se pudo recalcular " + ruta.nombre()
                         + "; se conserva su trazado", ex);
-                actualizadas.add(ruta);
+                return ruta;
             }
-        }
-        return actualizadas;
+        }).toList();
     }
 
     /**
@@ -158,6 +161,15 @@ public final class EberthMGestorServicios {
             List<LuisYPuntoImportante> paraderos, boolean optimizarOrden, EberthMTipoRetorno retorno,
             List<LuisYPuntoImportante> vueltaManual, int frecuenciaMin, int unidades,
             int pasajeros, String colorHex) {
+        return construirServicio(red, id, nombre, paraderos, optimizarOrden, retorno, vueltaManual,
+                frecuenciaMin, 0, unidades, pasajeros, colorHex);
+    }
+
+    /** Igual, con frecuencia de hora punta propia ({@code 0} = derivada de la normal). */
+    public static EberthMServicioMicro construirServicio(PieroGGrafoVial red, String id, String nombre,
+            List<LuisYPuntoImportante> paraderos, boolean optimizarOrden, EberthMTipoRetorno retorno,
+            List<LuisYPuntoImportante> vueltaManual, int frecuenciaMin, int frecuenciaPuntaMin, int unidades,
+            int pasajeros, String colorHex) {
         LuisYCalculadorTrayecto calc = new LuisYCalculadorTrayecto(red);
         LuisYTrayecto ida = optimizarOrden
                 ? calc.calcularOrdenOptimo(id, nombre, "Trafiqueishon", "SERVICIO", paraderos)
@@ -168,7 +180,7 @@ public final class EberthMGestorServicios {
         LuisYTrayecto vuelta = calc.calcular(id + "-vuelta", nombre + " · vuelta",
                 "Trafiqueishon", "SERVICIO_VUELTA", puntosVuelta);
         return new EberthMServicioMicro(id, nombre, ida, vuelta, frecuenciaMin, unidades,
-                pasajeros, colorHex, retorno);
+                pasajeros, colorHex, retorno, frecuenciaPuntaMin);
     }
 
     /** Reconstruye las micros guardadas (la vuelta es la ida invertida); omite las que fallen. */
@@ -193,7 +205,7 @@ public final class EberthMGestorServicios {
                 restauradas.add(new EberthMServicioMicro(guardada.id(), guardada.nombre(),
                         ida, vuelta, guardada.frecuenciaMinutos(),
                         guardada.unidadesDisponibles(), guardada.pasajerosEsperando(),
-                        guardada.color(), retorno));
+                        guardada.color(), retorno, guardada.frecuenciaPuntaMinutos()));
             } catch (Throwable t) {
                 LOG.log(Level.WARNING, "Se omitió ruta guardada: " + guardada.nombre(), t);
             }
