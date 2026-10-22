@@ -21,13 +21,14 @@ public final class BetoHRepositorioConfigCiudades {
                                        String horasPunta, double probabilidadLluvia,
                                        String tasaAccidentes, Double porcentajeEstudiantes,
                                        Double porcentajeTrabajadores, Double porcentajeJubilados,
-                                       Integer capacidadMaximaParada, String horasPuntaFinSemana) {
+                                       Integer capacidadMaximaParada, String horasPuntaFinSemana,
+                                       Double porcentajePoblacionEnPunta) {
         public static ParametrosGuardados desde(EberthMParametrosCiudad p) {
             return new ParametrosGuardados(p.getPoblacionTotal(), p.getPorcentajeTransportePublico(),
                     p.getHorasPunta(), p.getProbabilidadLluvia(), p.getTasaAccidentes().name(),
                     p.getPorcentajeEstudiantes(), p.getPorcentajeTrabajadores(),
                     p.getPorcentajeJubilados(), p.getCapacidadMaximaParada(),
-                    p.getHorasPuntaFinSemana());
+                    p.getHorasPuntaFinSemana(), p.getPorcentajePoblacionEnPunta());
         }
 
         /** @throws IllegalArgumentException si algún valor no es válido */
@@ -42,6 +43,7 @@ public final class BetoHRepositorioConfigCiudades {
             }
             if (capacidadMaximaParada != null) p.setCapacidadMaximaParada(capacidadMaximaParada);
             if (horasPuntaFinSemana != null) p.setHorasPuntaFinSemana(horasPuntaFinSemana);
+            if (porcentajePoblacionEnPunta != null) p.setPorcentajePoblacionEnPunta(porcentajePoblacionEnPunta);
             return p;
         }
     }

@@ -18,6 +18,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -25,12 +27,21 @@ public final class EberthMSimuladorBuses {
     public static final int MAX_UNIDADES = EberthMServicioMicro.MAX_UNIDADES;
     private static final Logger LOG = Logger.getLogger(EberthMSimuladorBuses.class.getName());
     private static final int MAX_DESVIOS_CACHE = 2_048;
+    /** Cuánto debe acercar un micro al pasajero para que suba aunque no lo deje en su destino. */
+    private static final double ACERCAMIENTO_TRANSBORDO_METROS = 150;
+    /** Con la parada llena de gente el micro admite hasta un 20 % más de su capacidad (pasajeros apretados). */
+    private static final double FACTOR_SOBRECUPO = 1.2;
+    /** Más lejos que esto del destino al bajar: el pasajero busca un segundo micro. */
+    private static final double RADIO_TRANSBORDO_METROS = EberthMIndicePoi.RADIO_CAMINATA_METROS;
     private static final double REINTENTO_SIN_RUTA_SEGUNDOS = 2.0;
     private static final int MAX_DESVIOS_POR_PASO = 16;
     /** Búsquedas A* de desvío nuevas por paso de simulación: reparte el costo y evita tirones. */
     private static final int MAX_BUSQUEDAS_DESVIO_POR_PASO = 1;
     private static final double DISTANCIA_FRENADO_SEMAFORO_METROS = 15.0;
     private static final double DISTANCIA_SEGURIDAD_METROS = 15.0;
+    /** Fracción de la velocidad que conserva un micro en una vía saturada (tráfico denso). */
+    private static final double FACTOR_VELOCIDAD_VIA_SATURADA = 0.3;
+    private final FlujoVias flujoVias = new FlujoVias();
     /** Cuántas vías por delante revisa cada vehículo para enterarse de un bloqueo a tiempo. */
     private static final int VIAS_DE_ANTICIPACION = 6;
     /** Radios (≈ 2 cuadras, luego más) del corredor en que se busca el desvío. */
@@ -38,6 +49,8 @@ public final class EberthMSimuladorBuses {
     private final List<Vehiculo> vehiculos = new ArrayList<>();
     private final List<DespachoProgramado> despachos = new ArrayList<>();
     private PieroGGrafoVial grafo;
+    /** Demanda del día generada sin rutas; si existe, la gente nace de sus zonas en lugar de repartirse por igual. */
+    private EberthMDemandaCiudad demandaCiudad;
     private PieroGPathfinder pathfinder;
     private List<EberthMEventoTrafico> eventos = List.of();
     private List<EberthMEventoTrafico> gasolineras = List.of();
@@ -63,6 +76,9 @@ public final class EberthMSimuladorBuses {
     private final EberthMGeneradorEventos generadorEventos =
             new EberthMGeneradorEventos(new java.util.Random());
     private volatile boolean eventosOrganicos;
+    private volatile boolean policiasDinamicos = true;
+    /** Vehículos detenidos en una misma vía a partir de los cuales llega un policía. */
+    public static final int COLA_PARA_POLICIA = 4;
     private EberthMTipoDia tipoDia = EberthMTipoDia.LABORAL;
     private EberthMParametrosCiudad parametrosCiudad;
     private java.util.function.Consumer<CambioEventosOrganicos> oyenteEventosOrganicos;
@@ -96,7 +112,7 @@ public final class EberthMSimuladorBuses {
     public void iniciar(LuisYTrayecto trayecto, int buses, int micros, int pasajeros) {
         Objects.requireNonNull(trayecto, "El trayecto es obligatorio.");
         long totalUnidades = (long) buses + micros;
-        long capacidadFlota = (long) buses * 50 + (long) micros * 18;
+        long capacidadFlota = (long) buses * 50 + (long) micros * EberthMPosicionVehiculo.CAPACIDAD_MICRO;
         if (buses < 0 || micros < 0 || totalUnidades < 1
                 || totalUnidades > MAX_UNIDADES) {
             throw new IllegalArgumentException("Selecciona hasta "
@@ -143,6 +159,8 @@ public final class EberthMSimuladorBuses {
         ultimoMinutoFactorPunta = -1;
         ultimoMinutoOrganico = 0;
         generadorEventos.reiniciar();
+        flujoVias.limpiar();
+        demandaParadas.setDemandaZonas(demandaCiudad, grafo);
         demandaParadas.reiniciar();
         // La demanda de cada ruta sale de la ciudad: población × % transporte público, repartida
         // entre las rutas. Sin parámetros de ciudad rige el valor guardado en la ruta.
@@ -154,8 +172,8 @@ public final class EberthMSimuladorBuses {
                     escalaDemanda);
             despacho.paradasIda = nodosParadas(servicio.trayecto());
             despacho.paradasVuelta = paradasRetorno(servicio);
-            demandaParadas.registrar(despacho.paradasIda);
-            demandaParadas.registrar(despacho.paradasVuelta);
+            demandaParadas.registrarParadasRuta(despacho.paradasIda);
+            demandaParadas.registrarParadasRuta(despacho.paradasVuelta);
             despachos.add(despacho);
         }
         ejecutando = true;
@@ -185,7 +203,9 @@ public final class EberthMSimuladorBuses {
         ultimoMinutoFactorPunta = -1;
         ultimoMinutoOrganico = 0;
         generadorEventos.reiniciar();
+        flujoVias.limpiar();
         desviosCache.clear();
+        presupuestoDesvios.pendientes.clear();
         demandaParadas.reiniciar();
     }
 
@@ -203,6 +223,15 @@ public final class EberthMSimuladorBuses {
     /** Enciende o apaga el generador orgánico; los eventos ya creados siguen hasta caducar. */
     public void setEventosOrganicos(boolean activos) {
         this.eventosOrganicos = activos;
+    }
+
+    /** Activa la llegada automática de policías a las intersecciones con cola; los vigentes caducan solos. */
+    public void setPoliciasDinamicos(boolean activos) {
+        this.policiasDinamicos = activos;
+    }
+
+    public boolean policiasDinamicosActivos() {
+        return policiasDinamicos;
     }
 
     public boolean eventosOrganicosActivos() {
@@ -235,9 +264,95 @@ public final class EberthMSimuladorBuses {
                         || parametrosCiudad.esHoraPunta(horaInicioMinutos + ultimoMinutoOrganico, tipoDia);
                 nuevos = generadorEventos.generar(ultimoMinutoOrganico, punta, parametrosCiudad, tipoDia);
             }
+            if (policiasDinamicos) {
+                List<EberthMEventoTrafico> policias = desplegarPolicias(ultimoMinutoOrganico);
+                if (!policias.isEmpty()) {
+                    nuevos = new ArrayList<>(nuevos);
+                    nuevos.addAll(policias);
+                }
+            }
             if ((!nuevos.isEmpty() || !expirados.isEmpty()) && oyenteEventosOrganicos != null) {
                 oyenteEventosOrganicos.accept(new CambioEventosOrganicos(nuevos, expirados));
             }
+        }
+    }
+
+    /**
+     * Envía un policía a cada intersección cuya vía de acceso tenga más de
+     * {@link #COLA_PARA_POLICIA} vehículos detenidos y aún no tenga uno.
+     */
+    private List<EberthMEventoTrafico> desplegarPolicias(int minuto) {
+        Map<PieroGEdge, Integer> detenidos = new java.util.IdentityHashMap<>();
+        for (Vehiculo v : vehiculos) {
+            if (v.estado != EberthMPosicionVehiculo.Estado.DETENIDO || v.indiceEdge >= v.ruta.size()) continue;
+            detenidos.merge(v.ruta.get(v.indiceEdge), 1, Integer::sum);
+        }
+        List<EberthMEventoTrafico> nuevos = new ArrayList<>();
+        for (Map.Entry<PieroGEdge, Integer> cola : detenidos.entrySet()) {
+            if (cola.getValue() <= COLA_PARA_POLICIA) continue;
+            PieroGNodo nodo = cola.getKey().destino;
+            if (generadorEventos.hayPoliciaEn(nodo.lon, nodo.lat)) continue;
+            // Guía a los vehículos de la cola en el sentido en que circulan.
+            PieroGEdge via = cola.getKey();
+            double rumbo = Math.atan2(via.destino.y - via.origen.y, via.destino.x - via.origen.x);
+            nuevos.add(generadorEventos.crearPolicia(nodo.lon, nodo.lat, minuto, rumbo));
+        }
+        return nuevos;
+    }
+
+    /** {@code true} si ninguna vía de la ruta supera hoy su flujo máximo de micros por hora. */
+    private boolean rutaSinSaturar(List<PieroGEdge> ruta) {
+        for (PieroGEdge edge : ruta) {
+            if (flujoVias.saturada(edge, segundosTranscurridos)) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Micros que entraron a cada vía en la última hora simulada (6 cubetas de 10 min). Una vía
+     * está saturada cuando ese flujo supera su {@link PieroGEdge#flujoMaximo}. Solo guarda las
+     * vías recorridas; se toca únicamente desde el hilo del motor.
+     */
+    private static final class FlujoVias {
+        private static final int CUBETAS = 6;
+        private static final double SEGUNDOS_CUBETA = 600;
+        /** Por vía: las {@link #CUBETAS} cuentas y, al final, el índice absoluto de la última cubeta. */
+        private final Map<PieroGEdge, long[]> porVia = new java.util.IdentityHashMap<>();
+
+        void limpiar() {
+            porVia.clear();
+        }
+
+        void registrarEntrada(PieroGEdge edge, double reloj) {
+            long[] datos = porVia.computeIfAbsent(edge, k -> new long[CUBETAS + 1]);
+            avanzar(datos, reloj);
+            datos[(int) (datos[CUBETAS] % CUBETAS)]++;
+        }
+
+        int vehiculosPorHora(PieroGEdge edge, double reloj) {
+            long[] datos = porVia.get(edge);
+            if (datos == null) return 0;
+            avanzar(datos, reloj);
+            long suma = 0;
+            for (int i = 0; i < CUBETAS; i++) suma += datos[i];
+            return (int) suma;
+        }
+
+        boolean saturada(PieroGEdge edge, double reloj) {
+            return !porVia.isEmpty() && vehiculosPorHora(edge, reloj) > edge.flujoMaximo;
+        }
+
+        /** Pone a cero las cubetas que ya salieron de la ventana de una hora. */
+        private static void avanzar(long[] datos, double reloj) {
+            long actual = (long) (reloj / SEGUNDOS_CUBETA);
+            long ultima = datos[CUBETAS];
+            if (actual <= ultima) return;
+            if (actual - ultima >= CUBETAS) {
+                java.util.Arrays.fill(datos, 0, CUBETAS, 0);
+            } else {
+                for (long c = ultima + 1; c <= actual; c++) datos[(int) (c % CUBETAS)] = 0;
+            }
+            datos[CUBETAS] = actual;
         }
     }
 
@@ -257,9 +372,44 @@ public final class EberthMSimuladorBuses {
             if (nodo != null) nodos.putIfAbsent(nodo.id, nodo);
         }
         demandaParadas.setUbicacionesFisicas(new ArrayList<>(nodos.values()));
+        registrarOrigenesResidenciales();
+    }
+
+    /** Máximo de puntos de origen residencial: la demanda se reparte entre ellos, no crece. */
+    private static final int MAX_ORIGENES_RESIDENCIALES = 400;
+
+    /**
+     * Origen residencial: la gente también sale de las calles {@code residential}. Se toma un
+     * nodo cada cierto número de tramos residenciales (muestreo uniforme y determinista).
+     */
+    private void registrarOrigenesResidenciales() {
+        List<PieroGNodo> residenciales = new ArrayList<>();
+        for (PieroGEdge e : grafo.getEdges()) {
+            if ("residential".equals(e.highway)) residenciales.add(e.origen);
+        }
+        int paso = Math.max(1, residenciales.size() / MAX_ORIGENES_RESIDENCIALES);
+        Map<Integer, PieroGNodo> elegidos = new HashMap<>();
+        for (int i = 0; i < residenciales.size(); i += paso) {
+            elegidos.putIfAbsent(residenciales.get(i).id, residenciales.get(i));
+        }
+        demandaParadas.setOrigenesResidenciales(new ArrayList<>(elegidos.values()));
     }
 
     private List<EberthMPoi> ubicacionesPoi = List.of();
+
+    /**
+     * Ejecutor donde se calculan los desvíos A*. Por defecto se calculan en línea (determinista,
+     * para pruebas); el motor de simulación entrega un pool de fondo para que el recálculo no
+     * detenga el paso de simulación: el micro espera y retoma la ruta cuando el cálculo termina.
+     */
+    public void setEjecutorDesvios(Executor ejecutor) {
+        presupuestoDesvios.ejecutor = Objects.requireNonNull(ejecutor);
+    }
+
+    /** Usa la demanda de la ciudad (zonas de origen y curva horaria) como fuente de pasajeros; null la quita. */
+    public void setDemandaCiudad(EberthMDemandaCiudad demanda) {
+        this.demandaCiudad = demanda;
+    }
 
     public void configurarGrafo(PieroGGrafoVial grafo) {
         this.grafo = Objects.requireNonNull(grafo);
@@ -267,6 +417,7 @@ public final class EberthMSimuladorBuses {
         registrarUbicacionesFisicas(ubicacionesPoi);
         this.pathfinder.setModo(PieroGPathfinder.Modo.A_ESTRELLA);
         generadorEventos.setVias(grafo.getEdges());
+        aplicarEscalaSemaforos();
     }
 
     public void actualizarServicios(List<EberthMServicioMicro> servicios) {
@@ -279,8 +430,8 @@ public final class EberthMSimuladorBuses {
                 despacho.despachador.actualizarServicio(actualizado);
                 despacho.paradasIda = nodosParadas(actualizado.trayecto());
                 despacho.paradasVuelta = paradasRetorno(actualizado);
-                demandaParadas.registrar(despacho.paradasIda);
-                demandaParadas.registrar(despacho.paradasVuelta);
+                demandaParadas.registrarParadasRuta(despacho.paradasIda);
+                demandaParadas.registrarParadasRuta(despacho.paradasVuelta);
             }
         }
         for (Vehiculo vehiculo : vehiculos) {
@@ -307,6 +458,7 @@ public final class EberthMSimuladorBuses {
     private void invalidarRutas() {
         versionRed++;
         desviosCache.clear();
+        presupuestoDesvios.pendientes.clear();
     }
 
     /**
@@ -357,7 +509,7 @@ public final class EberthMSimuladorBuses {
         for (Vehiculo vehiculo : vehiculos) {
             try {
                 vehiculo.avanzar(delta, pathfinder, gasolineras, versionRed, desviosCache,
-                        presupuestoDesvios, demandaParadas, segundosTranscurridos);
+                        presupuestoDesvios, demandaParadas, segundosTranscurridos, flujoVias);
             } catch (RuntimeException ex) {
                 vehiculo.estado = EberthMPosicionVehiculo.Estado.AVERIADO;
                 LOG.log(Level.SEVERE, "Se aisló un error en el vehículo " + vehiculo.idRuta, ex);
@@ -365,6 +517,7 @@ public final class EberthMSimuladorBuses {
         }
         procesarDespachos();
         generarEventosOrganicos();
+        demandaParadas.caminar(delta);
         demandaParadas.setMultiplicadorHorario(multiplicadorDemandaHorario());
         demandaParadas.generar((int) (segundosTranscurridos / 60), minutoParaPerfil(), escalaDemanda, eventos);
         pasajerosTransportados += demandaParadas.retirarAbordados();
@@ -416,6 +569,55 @@ public final class EberthMSimuladorBuses {
     /** Pasajeros que se cansaron de esperar y se fueron (taxi o a pie). */
     public int pasajerosAbandonaron() {
         return demandaParadas.abandonos();
+    }
+
+    /** Pasajeros nacidos en zonas con servicio desde que arrancó la simulación. */
+    public long pasajerosGenerados() {
+        return demandaParadas.generados();
+    }
+
+    /** Pasajeros que llegaron a su destino y bajaron del micro. */
+    public int pasajerosBajaron() {
+        return demandaParadas.bajaron;
+    }
+
+    /** Pasajeros que caminan hacia la parada de ruta más cercana. */
+    public int pasajerosCaminando() {
+        return demandaParadas.caminando();
+    }
+
+    /** Posiciones {@code x0, y0, x1, y1, …} de los grupos que caminan hacia una parada. */
+    public double[] posicionesCaminantes() {
+        return demandaParadas.posicionesCaminantes();
+    }
+
+    /** Ubicaciones donde se generó demanda pero ninguna parada de ruta queda a ≤ 300 m. */
+    public int zonasSinCobertura() {
+        return demandaParadas.zonasSinCobertura();
+    }
+
+    /** Pasajeros que no pudieron salir por falta de cobertura. */
+    public int pasajerosSinCobertura() {
+        return (int) Math.min(Integer.MAX_VALUE, demandaParadas.pasajerosSinCobertura());
+    }
+
+    /** Pasajeros que han hecho transbordo (bajaron lejos de su destino y buscan otro micro). */
+    public int transbordos() {
+        return demandaParadas.transbordos;
+    }
+
+    /** {@code x, y, pasajeros} de cada zona sin cobertura (mayor demanda primero). */
+    public double[] zonasSinCoberturaXY() {
+        return demandaParadas.zonasSinCoberturaXY();
+    }
+
+    /** {@code lon, lat, pasajeros} de cada zona sin cobertura, de mayor a menor demanda. */
+    public double[] zonasSinCoberturaLonLat() {
+        return demandaParadas.zonasSinCoberturaLonLat();
+    }
+
+    public String peorZonaSinCobertura() {
+        return demandaParadas.nombrePeorZona();
     }
 
     public List<EberthMParadaEspera> paradasEnEspera() {
@@ -479,9 +681,14 @@ public final class EberthMSimuladorBuses {
             try {
                 Optional<EberthMDespachador.Salida> pendiente;
                 while ((pendiente = despachador.siguienteSalida(
-                        segundosTranscurridos, multiplicadorDemandaActual(), esHoraPuntaDemanda())).isPresent()) {
+                        segundosTranscurridos, multiplicadorDemandaActual(), esHoraPuntaDemanda(),
+                        desdeFinal -> rutaSinSaturar(desdeFinal
+                                ? servicio.trayectoVuelta().edges() : servicio.trayecto().edges())))
+                        .isPresent()) {
                     EberthMDespachador.Salida salida = pendiente.get();
-                    int abordados = salida.pasajeros();
+                    // Los pasajeros salen de la cola real de la terminal, no de un contador propio
+                    // del despachador: así una unidad llena no bloquea el abordaje en ruta.
+                    int abordados = 0;
                     boolean saleDelFinal = salida.desdeTerminalFinal();
                     Vehiculo vehiculo = new Vehiculo(
                             saleDelFinal ? servicio.trayectoVuelta().edges()
@@ -495,9 +702,11 @@ public final class EberthMSimuladorBuses {
                     vehiculo.enIda = !saleDelFinal;
                     vehiculo.paradas = vehiculo.enIda
                             ? vehiculo.paradasIda : vehiculo.paradasVuelta;
-                    vehiculo.asignarDestinos(abordados, demandaParadas);
+                    vehiculo.abordarEnTerminal(demandaParadas);
                     vehiculos.add(vehiculo);
-                    pasajerosTransportados += abordados;
+                    if (!vehiculo.ruta.isEmpty()) {
+                        flujoVias.registrarEntrada(vehiculo.ruta.getFirst(), segundosTranscurridos);
+                    }
                 }
             } catch (RuntimeException ex) {
                 despachador.finalizar();
@@ -523,6 +732,7 @@ public final class EberthMSimuladorBuses {
         }
         ultimoMinutoFactorPunta = horaActual;
         ultimaHoraPuntaForzada = horaPuntaForzada;
+        if (grafo != null) grafo.setHoraPuntaSemaforos(esHoraPuntaDemanda());
     }
 
     /** Multiplicador por hora de la demanda de pasajeros; -1 sin parámetros de ciudad (perfil clásico). */
@@ -559,7 +769,7 @@ public final class EberthMSimuladorBuses {
     }
 
     private static int capacidad(EberthMPosicionVehiculo.TipoVehiculo tipo) {
-        return tipo == EberthMPosicionVehiculo.TipoVehiculo.BUS ? 50 : 18;
+        return tipo == EberthMPosicionVehiculo.TipoVehiculo.BUS ? 50 : EberthMPosicionVehiculo.CAPACIDAD_MICRO;
     }
 
     public double getVelocidadSimulacion() {
@@ -567,8 +777,8 @@ public final class EberthMSimuladorBuses {
     }
 
     /**
-     * Multiplica la demanda base de todas las rutas y el flujo que llega a cada parada. Se aplica
-     * a las simulaciones que se inicien después; no cambia la que ya corre.
+     * Multiplica la demanda base de todas las rutas y el flujo que llega a cada parada. También
+     * rige en una simulación en marcha: la generación de las paradas la lee en cada paso.
      */
     public void setEscalaDemanda(int escala) {
         if (escala < 1 || escala > MAX_ESCALA_DEMANDA) {
@@ -584,6 +794,14 @@ public final class EberthMSimuladorBuses {
             throw new IllegalArgumentException("La velocidad debe estar entre 0.5x y 30x.");
         }
         this.velocidadSimulacion = velocidadSimulacion;
+        aplicarEscalaSemaforos();
+    }
+
+    /** A x30 o más los semáforos duran el doble en el reloj simulado para que se vean cambiar. */
+    private void aplicarEscalaSemaforos() {
+        if (grafo == null) return;
+        grafo.setEscalaTiempoSemaforos(velocidadSimulacion >= EberthMSemaforo.VELOCIDAD_CICLO_LARGO
+                ? EberthMSemaforo.ESCALA_CICLO_LARGO : 1.0);
     }
 
     private static final class Vehiculo {
@@ -603,6 +821,8 @@ public final class EberthMSimuladorBuses {
         private final Map<EberthMPoi, Integer> destinosPoi = new HashMap<>();
         /** Punto de la ruta más cercano a cada POI destino: ahí bajan sus pasajeros y caminan el resto. */
         private final Map<EberthMPoi, PuntoBajada> puntosBajada = new HashMap<>();
+        /** Parte de {@link #destinosPoi} que subió porque el micro solo los acerca: harán transbordo. */
+        private final Map<EberthMPoi, Integer> acercados = new HashMap<>();
         /** POIs a ≤ 400 m de {@link #rutaCandidatos}; se recalcula cuando cambia la ruta. */
         private List<EberthMIndicePoi.Candidato> candidatosPoi = List.of();
         private List<PieroGEdge> rutaCandidatos;
@@ -620,6 +840,8 @@ public final class EberthMSimuladorBuses {
         private Set<String> gasolinerasVisitadas;
         private long versionRuta = -1;
         private double reintentoSinRuta;
+        /** Hay un desvío calculándose en segundo plano para este vehículo. */
+        private boolean calculandoDesvio;
         /** Al volver al terminal, sube a los que esperan allí cuando termina la espera. */
         private boolean abordajePendiente;
         /** Metros que puede avanzar en el paso actual sin invadir la distancia de seguridad. */
@@ -662,7 +884,7 @@ public final class EberthMSimuladorBuses {
                              List<EberthMEventoTrafico> eventos, long versionRed,
                              Map<RutaDesvioKey, List<PieroGEdge>> desviosCache,
                              PresupuestoDesvios presupuesto,
-                             DemandaParadas demanda, double reloj) {
+                             DemandaParadas demanda, double reloj, FlujoVias flujo) {
             // Sin ruta posible solo se reintenta al cambiar la red o por el temporizador de abajo:
             // buscar cada paso un desvío que no existe (A* sobre todo el mapa) congelaba la simulación.
             if (versionRuta != versionRed
@@ -672,7 +894,7 @@ public final class EberthMSimuladorBuses {
             if (estado == EberthMPosicionVehiculo.Estado.SIN_RUTA) {
                 // Nunca queda errante: reintenta mientras no exista desvío.
                 reintentoSinRuta -= segundos;
-                if (reintentoSinRuta <= 0) {
+                if (calculandoDesvio || reintentoSinRuta <= 0) {
                     reintentoSinRuta = REINTENTO_SIN_RUTA_SEGUNDOS;
                     recalcularSiCerrada(pathfinder, versionRed, desviosCache, presupuesto);
                 }
@@ -708,16 +930,21 @@ public final class EberthMSimuladorBuses {
                     if (estado == EberthMPosicionVehiculo.Estado.SIN_RUTA) break;
                     continue;
                 }
-                double velocidad = edge.velocidadLibreMps()
-                        / Math.max(1.0, edge.factorTrafico * edge.factorHoraPunta);
+                // Un policía en el cruce de destino ordena el paso: la congestión pesa la mitad y
+                // la vía no se trata como saturada.
+                boolean conPolicia = edge.destino.policiaTransito;
+                double congestion = Math.max(1.0, edge.factorTrafico * edge.factorHoraPunta);
+                double velocidad = edge.velocidadLibreMps() / (conPolicia ? Math.max(1.0, congestion / 2) : congestion);
                 if (!eventos.isEmpty() && bajoLluvia(edge, eventos)) {
                     velocidad *= EberthMTipoEvento.LLUVIA.multiplicadorVelocidad();
                 }
+                if (!conPolicia && flujo.saturada(edge, reloj)) velocidad *= FACTOR_VELOCIDAD_VIA_SATURADA;
                 velocidad = Math.max(1.0, velocidad);
                 double disponible = Math.max(0, edge.longitudMetros() - progresoMetros);
                 double libre = disponible;
                 EberthMSemaforo semaforo = edge.destino.semaforo;
-                if (edge.destino.semaforoRoto || (semaforo != null && semaforo.esRojo(reloj))) {
+                if ((edge.destino.semaforoRoto && !conPolicia) || (semaforo != null && semaforo.esRojo(reloj,
+                        EberthMSemaforo.Eje.de(edge), edge.destino.policiaTransito))) {
                     // Con luz roja (o semáforo roto: rojo permanente) se frena DISTANCIA_FRENADO_SEMAFORO_METROS antes del nodo.
                     libre = Math.min(libre, Math.max(0,
                             edge.longitudMetros() - DISTANCIA_FRENADO_SEMAFORO_METROS - progresoMetros));
@@ -734,7 +961,7 @@ public final class EberthMSimuladorBuses {
                 double recorrido = Math.min(disponible, restante * velocidad);
                 double progresoPrevio = progresoMetros;
                 progresoMetros += recorrido;
-                if (recorrido > 0) bajarEnPois(edge, progresoPrevio, progresoMetros);
+                if (recorrido > 0) demanda.bajaron += bajarEnPois(edge, progresoPrevio, progresoMetros, demanda);
                 avanceTick += recorrido;
                 restante -= recorrido / velocidad;
                 if (progresoMetros >= edge.longitudMetros()) {
@@ -751,11 +978,14 @@ public final class EberthMSimuladorBuses {
                     }
                     indiceEdge++;
                     progresoMetros = 0;
+                    if (indiceEdge < ruta.size()) flujo.registrarEntrada(ruta.get(indiceEdge), reloj);
                     if (indiceEdge >= ruta.size()) {
+                        demanda.bajaron += pasajeros;
                         pasajeros = 0; // en el terminal bajan todos
                         destinos.clear();
                         destinosPoi.clear();
                         puntosBajada.clear();
+                        acercados.clear();
                         ruta = rutaAlternativa;
                         enIda = !enIda;
                         paradas = enIda ? paradasIda : paradasVuelta;
@@ -763,6 +993,7 @@ public final class EberthMSimuladorBuses {
                         abordajePendiente = !paradas.isEmpty();
                         versionRuta = -1; // la nueva ruta se revisa por completo en el próximo paso
                         indiceEdge = 0;
+                        if (!ruta.isEmpty()) flujo.registrarEntrada(ruta.getFirst(), reloj);
                         esperaRestante = esperaTerminalSegundos;
                         estado = EberthMPosicionVehiculo.Estado.EN_RUTA;
                         break;
@@ -788,7 +1019,10 @@ public final class EberthMSimuladorBuses {
         /** En una parada primero bajan los que van allí y luego suben los que esperan. */
         private void intercambiarPasajeros(PieroGNodo parada, DemandaParadas demanda) {
             Integer bajan = destinos.remove(parada);
-            if (bajan != null) pasajeros -= bajan;
+            if (bajan != null) {
+                pasajeros -= bajan;
+                demanda.bajaron += bajan;
+            }
             int futuras = paradas.size() - siguienteParada;
             if (futuras <= 0) return; // última parada: nadie sube, no tendría destino
             subirPasajeros(parada, demanda);
@@ -800,19 +1034,28 @@ public final class EberthMSimuladorBuses {
          * POI (ciudad sin puntos de interés) suben y se reparten entre las paradas restantes.
          */
         private void subirPasajeros(PieroGNodo parada, DemandaParadas demanda) {
-            int libres = capacidad - pasajeros;
+            int libres = (int) (capacidad * FACTOR_SOBRECUPO) - pasajeros;
             if (libres <= 0) return;
             List<EberthMIndicePoi.Candidato> adelante = candidatosAdelante(demanda.pois());
             Set<EberthMPoi> alcanzables = Collections.newSetFromMap(new IdentityHashMap<>());
             for (EberthMIndicePoi.Candidato c : adelante) alcanzables.add(c.poi());
-            double[] pos = alcanzables.isEmpty() ? null : posicionActual();
+            double[] pos = ruta.isEmpty() ? null : posicionActual();
+            // Abordaje universal: quien espera sube al primer micro con espacio que pase por su parada;
+            // si no lo lleva a su destino lo deja en el punto de la ruta más cercano y hace transbordo.
+            Map<EberthMPoi, Boolean> acercaTransbordo = new HashMap<>();
             int[] sinPoi = {0};
-            int suben = demanda.abordar(parada, libres, alcanzables::contains, (poi, n) -> {
+            int suben = demanda.abordar(parada, libres, (poi, transbordo) -> {
+                if (alcanzables.contains(poi)) return true;
+                if (pos == null) return false;
+                // Quien ya hizo un transbordo solo sube a un micro que lo deje en su destino o lo acerque.
+                return !transbordo || acercaTransbordo.computeIfAbsent(poi, p -> acerca(p, pos));
+            }, (poi, n) -> {
                 if (poi == null) {
                     sinPoi[0] += n;
                 } else if (EberthMIndicePoi.distanciaPuntoSegmento(poi.lon(), poi.lat(),
                         pos[0], pos[1], pos[0], pos[1]) > EberthMIndicePoi.RADIO_BAJADA_METROS) {
                     destinosPoi.merge(poi, n, Integer::sum);
+                    if (!alcanzables.contains(poi)) acercados.merge(poi, n, Integer::sum);
                     puntosBajada.computeIfAbsent(poi, this::puntoMasCercanoEnRuta);
                 } else {
                     sinPoi[0] += n; // destino pegado al punto de subida: bajaría de inmediato
@@ -822,35 +1065,13 @@ public final class EberthMSimuladorBuses {
             asignarDestinosAParadas(sinPoi[0], demanda);
         }
 
-        /**
-         * Reparte {@code cantidad} pasajeros del despachador: a un POI aleatorio a ≤ 400 m de lo
-         * que le falta de ruta o, si no hay ninguno, a una de las paradas que aún le faltan.
-         */
-        private void asignarDestinos(int cantidad, DemandaParadas demanda) {
-            int futuras = paradas.size() - siguienteParada;
-            if (cantidad <= 0) return;
-            List<EberthMIndicePoi.Candidato> adelante = candidatosAdelante(demanda.pois());
-            double[] pos = adelante.isEmpty() ? null : posicionActual();
-            for (int i = 0; i < cantidad; i++) {
-                EberthMPoi poi = adelante.isEmpty() ? null
-                        : adelante.get(demanda.sorteo(adelante.size())).poi();
-                if (poi != null && EberthMIndicePoi.distanciaPuntoSegmento(poi.lon(), poi.lat(),
-                        pos[0], pos[1], pos[0], pos[1]) > EberthMIndicePoi.RADIO_BAJADA_METROS) {
-                    destinosPoi.merge(poi, 1, Integer::sum);
-                    puntosBajada.computeIfAbsent(poi, this::puntoMasCercanoEnRuta);
-                } else if (futuras > 0) {
-                    destinos.merge(paradas.get(siguienteParada + demanda.sorteo(futuras)),
-                            1, Integer::sum);
-                }
-            }
-        }
-
         /** Reparte pasajeros sin POI destino entre las paradas que aún le faltan al vehículo. */
         private void asignarDestinosAParadas(int cantidad, DemandaParadas demanda) {
             int futuras = paradas.size() - siguienteParada;
             if (cantidad <= 0) return;
             if (futuras <= 0) { // sin dónde bajar: no suben
                 pasajeros -= cantidad;
+                demanda.deshacerAbordaje(cantidad);
                 return;
             }
             for (int i = 0; i < cantidad; i++) {
@@ -881,7 +1102,16 @@ public final class EberthMSimuladorBuses {
         }
 
         /** Tramo de la ruta (y metros dentro de él) donde el micro pasa más cerca del POI. */
-        private record PuntoBajada(PieroGEdge edge, double metros) {}
+        private record PuntoBajada(PieroGEdge edge, double metros, double distancia) {}
+
+        /** El micro deja a quien ya hizo un transbordo al menos {@value #ACERCAMIENTO_TRANSBORDO_METROS} m más cerca de su POI. */
+        private boolean acerca(EberthMPoi poi, double[] pos) {
+            PuntoBajada mejor = puntoMasCercanoEnRuta(poi);
+            if (mejor == null) return false;
+            double actual = EberthMIndicePoi.distanciaPuntoSegmento(poi.lon(), poi.lat(),
+                    pos[0], pos[1], pos[0], pos[1]);
+            return actual - mejor.distancia() >= ACERCAMIENTO_TRANSBORDO_METROS;
+        }
 
         /**
          * Busca, de la posición actual en adelante, el punto de la ruta más cercano al POI (a
@@ -901,7 +1131,7 @@ public final class EberthMSimuladorBuses {
                         aLon, aLat, e.destino.lon, e.destino.lat);
                 if (p[0] < mejorDistancia - 1.0) { // 1 m de tolerancia: gana el tramo más temprano
                     mejorDistancia = p[0];
-                    mejor = new PuntoBajada(e, (desde + p[1] * (1 - desde)) * largo);
+                    mejor = new PuntoBajada(e, (desde + p[1] * (1 - desde)) * largo, p[0]);
                 }
             }
             return mejor;
@@ -912,8 +1142,10 @@ public final class EberthMSimuladorBuses {
          * este paso (segmento entre ambos progresos, para no saltarse un POI a alta velocidad) o
          * cuyo punto de la ruta más cercano ({@link #puntosBajada}) se cruzó en este paso.
          */
-        private void bajarEnPois(PieroGEdge edge, double desdeMetros, double hastaMetros) {
-            if (destinosPoi.isEmpty()) return;
+        private int bajarEnPois(PieroGEdge edge, double desdeMetros, double hastaMetros,
+                            DemandaParadas demanda) {
+            if (destinosPoi.isEmpty()) return 0;
+            int bajados = 0;
             double largo = Math.max(0.01, edge.longitudMetros());
             double f0 = Math.min(1, desdeMetros / largo), f1 = Math.min(1, hastaMetros / largo);
             double dLon = edge.destino.lon - edge.origen.lon, dLat = edge.destino.lat - edge.origen.lat;
@@ -926,13 +1158,26 @@ public final class EberthMSimuladorBuses {
                 PuntoBajada punto = puntosBajada.get(poi);
                 boolean cruzado = punto != null && punto.edge() == edge
                         && punto.metros() >= desdeMetros && punto.metros() <= hastaMetros;
+                // A menos de 400 m del POI destino el pasajero baja y camina el resto: «llegó».
                 if (cruzado || EberthMIndicePoi.distanciaPuntoSegmento(poi.lon(), poi.lat(), aLon, aLat,
-                        bLon, bLat) <= EberthMIndicePoi.RADIO_BAJADA_METROS) {
-                    pasajeros -= e.getValue();
+                        bLon, bLat) <= EberthMIndicePoi.RADIO_CAMINATA_METROS) {
+                    int n = e.getValue();
+                    pasajeros -= n;
+                    bajados += n;
                     it.remove();
                     puntosBajada.remove(poi);
+                    Integer parciales = acercados.remove(poi);
+                    if (parciales != null && parciales > 0
+                            && EberthMIndicePoi.distanciaPuntoSegmento(poi.lon(), poi.lat(), bLon, bLat,
+                            bLon, bLat) > RADIO_TRANSBORDO_METROS) {
+                        // Bajan lejos de su destino: buscan un segundo micro desde el nodo más cercano.
+                        bajados -= parciales;
+                        PieroGNodo lugar = f1 >= 0.5 ? edge.destino : edge.origen;
+                        demanda.transbordar(lugar, poi, parciales);
+                    }
                 }
             }
+            return bajados;
         }
 
         private void detectarGasolinera(List<EberthMEventoTrafico> eventos) {
@@ -988,7 +1233,13 @@ public final class EberthMSimuladorBuses {
                     }
                     return;
                 }
+                calculandoDesvio = false;
                 if (!desviarHastaSiguienteParada(pathfinder, bloqueada, desviosCache, presupuesto)) {
+                    if (calculandoDesvio && bloqueada > indiceEdge) {
+                        // Aún no llega al bloqueo: sigue avanzando mientras el A* termina en segundo plano.
+                        versionRuta = -1;
+                        return;
+                    }
                     estado = EberthMPosicionVehiculo.Estado.SIN_RUTA;
                     return;
                 }
@@ -1051,26 +1302,27 @@ public final class EberthMSimuladorBuses {
             List<PieroGEdge> desvio = desviosCache.get(clave);
             if (desvio != null && desvio.isEmpty()) return false; // sin desvío posible (caché negativa)
             if (desvio == null) {
-                // Sin presupuesto el vehículo espera (SIN_RUTA) y reintenta en el paso siguiente.
-                if (presupuesto.restantes <= 0) return false;
-                presupuesto.restantes--;
-                List<PieroGEdge> referencia = ruta.subList(prefijo + 1, reenganche + 1);
-                PieroGRutaResult resultado = null;
-                // Primero cerca de la ruta original (≈ 2 cuadras); solo si no hay paso se amplía.
-                for (double radio : RADIOS_DESVIO_METROS) {
-                    resultado = pathfinder.rutaCercana(inicio, objetivo, referencia, radio);
-                    if (resultado != null) break;
+                CompletableFuture<List<PieroGEdge>> futuro = presupuesto.pendientes.get(clave);
+                if (futuro == null) {
+                    // Sin presupuesto el vehículo espera (SIN_RUTA) y reintenta en el paso siguiente.
+                    if (presupuesto.restantes <= 0) return false;
+                    presupuesto.restantes--;
+                    List<PieroGEdge> referencia = List.copyOf(ruta.subList(prefijo + 1, reenganche + 1));
+                    PieroGNodo ini = inicio;
+                    futuro = CompletableFuture.supplyAsync(() -> buscarDesvio(pathfinder, ini, objetivo, referencia),
+                            presupuesto.ejecutor);
+                    if (!futuro.isDone()) presupuesto.pendientes.put(clave, futuro);
                 }
-                if (resultado == null) resultado = pathfinder.ruta(inicio, objetivo);
-                if (resultado == null || resultado.getEdges().isEmpty()) {
-                    // Se recuerda el fallo hasta que cambie la red (invalidarRutas limpia la caché).
-                    if (desviosCache.size() >= MAX_DESVIOS_CACHE) desviosCache.clear();
-                    desviosCache.put(clave, List.of());
+                if (!futuro.isDone()) {
+                    calculandoDesvio = true;
                     return false;
                 }
-                desvio = resultado.getEdges();
+                presupuesto.pendientes.remove(clave);
+                desvio = futuro.join();
                 if (desviosCache.size() >= MAX_DESVIOS_CACHE) desviosCache.clear();
+                // Un desvío vacío recuerda el fallo hasta que cambie la red (invalidarRutas limpia la caché).
                 desviosCache.put(clave, desvio);
+                if (desvio.isEmpty()) return false;
             }
             List<PieroGEdge> nuevaRuta = new ArrayList<>(ruta.subList(0, prefijo + 1));
             nuevaRuta.addAll(desvio);
@@ -1084,6 +1336,24 @@ public final class EberthMSimuladorBuses {
             estado = EberthMPosicionVehiculo.Estado.EN_RUTA;
             LOG.info(() -> "Ruta de emergencia para " + idRuta + " hasta la siguiente parada");
             return true;
+        }
+
+        /** A* cerca de la ruta original (≈ 2 cuadras); solo si no hay paso se amplía. Vacío = sin desvío. */
+        private static List<PieroGEdge> buscarDesvio(PieroGPathfinder pathfinder, PieroGNodo inicio,
+                                                     PieroGNodo objetivo, List<PieroGEdge> referencia) {
+            try {
+                PieroGRutaResult resultado = null;
+                for (double radio : RADIOS_DESVIO_METROS) {
+                    resultado = pathfinder.rutaCercana(inicio, objetivo, referencia, radio);
+                    if (resultado != null) break;
+                }
+                if (resultado == null) resultado = pathfinder.ruta(inicio, objetivo);
+                if (resultado == null || resultado.getEdges().isEmpty()) return List.of();
+                return List.copyOf(resultado.getEdges());
+            } catch (RuntimeException ex) {
+                LOG.log(Level.WARNING, "Falló el cálculo de desvío", ex);
+                return List.of();
+            }
         }
 
         private boolean esParadaPendiente(PieroGNodo nodo) {
@@ -1112,6 +1382,9 @@ public final class EberthMSimuladorBuses {
     /** Búsquedas de desvío que aún se pueden hacer en el paso actual. */
     private static final class PresupuestoDesvios {
         private int restantes;
+        private Executor ejecutor = Runnable::run;
+        /** Desvíos en cálculo; solo se lee/escribe desde el hilo de simulación. */
+        private final Map<RutaDesvioKey, CompletableFuture<List<PieroGEdge>>> pendientes = new HashMap<>();
     }
 
     private static final class DespachoProgramado {
@@ -1134,7 +1407,8 @@ public final class EberthMSimuladorBuses {
          * Cuántos habitantes que usan transporte público representa cada pasajero simulado
          * («factor de escala»). Mayor valor = menos gente en pantalla.
          */
-        private static final double FACTOR_ESCALA_POBLACION = 10;
+        private static final double FACTOR_ESCALA_POBLACION =
+                EberthMParametrosCiudad.ESCALA_POBLACION_SIMULADA;
         private static final int MINUTOS_POR_DIA = 24 * 60;
         /** Sin multiplicador horario configurado (sin parámetros de ciudad) rige el perfil clásico. */
         private double multiplicadorHorario = -1;
@@ -1150,8 +1424,8 @@ public final class EberthMSimuladorBuses {
         /** Pasajeros por minuto de toda la ciudad: población × % de uso ÷ factor de escala, repartida en el día. */
         double demandaCiudadPorMinuto() {
             if (perfilCiudad == null) return 0;
-            return perfilCiudad.getPoblacionTotal() * perfilCiudad.getPorcentajeTransportePublico() / 100.0
-                    / FACTOR_ESCALA_POBLACION / MINUTOS_POR_DIA;
+            return perfilCiudad.usuariosTransporteDiarios()
+                    / perfilCiudad.escalaPoblacionSimulada() / MINUTOS_POR_DIA;
         }
 
         /** Grupos con destino distinto en que se divide la llegada de un minuto a una ubicación. */
@@ -1171,7 +1445,74 @@ public final class EberthMSimuladorBuses {
         private long esperaTotal;
         private long abordadosConEspera;
         private int abandonos;
+        /** Pasajeros que llegaron a su destino y bajaron (lo suma el vehículo al bajarlos). */
+        int bajaron;
+        /** Pasajeros nacidos en zonas con servicio (en cola, caminando, rendidos, a bordo o ya llegados). */
+        private long generados;
+        /** Velocidad a pie: 5 km/h. */
+        private static final double VELOCIDAD_CAMINATA_MPS = 5 / 3.6;
+        /** Más lejos que esto nadie camina hasta una parada: la zona queda «sin cobertura». */
+        private static final double CAMINATA_MAXIMA_METROS = 300;
+        /** Zonas sin cobertura que se retienen para el mapa y la alerta (las de mayor demanda). */
+        private static final int MAX_ZONAS_SIN_COBERTURA = 200;
+        /** Pasajeros no atendidos por ubicación sin parada de ruta a ≤ 300 m (clave: id del nodo). */
+        private final Map<Integer, Integer> sinCobertura = new HashMap<>();
+        private long pasajerosSinCobertura;
+        /** Pasajeros que bajaron lejos de su destino y buscan un segundo micro. */
+        int transbordos;
+        /** Paradas de las rutas activas: allí esperan los micros; fuera de ellas se camina. */
+        private final Map<Integer, PieroGNodo> paradasRuta = new HashMap<>();
+        /** Parada de ruta más cercana de cada ubicación (null = ninguna a distancia de caminata). */
+        private final Map<Integer, Destino> caminataCache = new HashMap<>();
+        private final List<Caminante> caminantes = new ArrayList<>();
+        private int caminando;
         private final java.util.Random azar = new java.util.Random();
+        /** Fracción de la demanda diaria que nace en cada nodo-zona (clave: id del nodo); null = reparto uniforme. */
+        private Map<Integer, Double> compartirZona;
+        private List<PieroGNodo> nodosZona = List.of();
+        /** Pasajeros simulados por hora del día (viajes ÷ factor de escala). */
+        private double[] pasajerosHoraSimulados;
+        private EberthMDemandaCiudad demandaZonas;
+        /** Zonas de la demanda cuyo centro cae en cada nodo (clave: id del nodo). */
+        private Map<Integer, List<Integer>> zonasDeNodo = new HashMap<>();
+
+        void setDemandaZonas(EberthMDemandaCiudad demanda, PieroGGrafoVial red) {
+            if (demanda == null || red == null) {
+                compartirZona = null;
+                nodosZona = List.of();
+                pasajerosHoraSimulados = null;
+                demandaZonas = null;
+                zonasDeNodo = new HashMap<>();
+                return;
+            }
+            double total = 0;
+            for (EberthMDemandaCiudad.Zona z : demanda.zonas()) total += demanda.viajesDesdeZona(z.id());
+            Map<Integer, Double> reparto = new HashMap<>();
+            Map<Integer, PieroGNodo> unicos = new HashMap<>();
+            Map<Integer, List<Integer>> porNodo = new HashMap<>();
+            for (EberthMDemandaCiudad.Zona z : demanda.zonas()) {
+                PieroGNodo nodo = red.nodoMasCercanoLonLat(z.lon(), z.lat());
+                if (nodo == null || total <= 0) continue;
+                reparto.merge(nodo.id, demanda.viajesDesdeZona(z.id()) / total, Double::sum);
+                porNodo.computeIfAbsent(nodo.id, k -> new ArrayList<>()).add(z.id());
+                unicos.put(nodo.id, nodo);
+            }
+            compartirZona = reparto;
+            demandaZonas = demanda;
+            zonasDeNodo = porNodo;
+            nodosZona = new ArrayList<>(unicos.values());
+            pasajerosHoraSimulados = demanda.viajesPorHora();
+            double escala = perfilCiudad == null ? FACTOR_ESCALA_POBLACION : perfilCiudad.escalaPoblacionSimulada();
+            for (int h = 0; h < 24; h++) pasajerosHoraSimulados[h] /= escala;
+        }
+
+        /** Destino según el flujo zona → POI de la zona donde nace el pasajero; null si no hay flujo. */
+        private EberthMPoi destinoPorFlujo(int idNodo) {
+            List<Integer> zonas = zonasDeNodo.get(idNodo);
+            if (demandaZonas == null || zonas == null || zonas.isEmpty()) return null;
+            int zona = zonas.get(azar.nextInt(zonas.size()));
+            return EberthMGeneradorDemanda.sortearDestinoPorFlujo(demandaZonas, zona, azar);
+        }
 
         void reiniciar() {
             esperando.clear();
@@ -1181,7 +1522,18 @@ public final class EberthMSimuladorBuses {
             esperaTotal = 0;
             abordadosConEspera = 0;
             abandonos = 0;
+            bajaron = 0;
+            generados = 0;
+            paradasRuta.clear();
+            caminataCache.clear();
+            caminantes.clear();
+            caminando = 0;
+            sinCobertura.clear();
+            pasajerosSinCobertura = 0;
+            transbordos = 0;
             registrar(ubicacionesFisicas);
+            registrar(new ArrayList<>(residenciales.values()));
+            registrar(nodosZona);
         }
 
         void setMaximoPorParada(int maximo) {
@@ -1195,16 +1547,109 @@ public final class EberthMSimuladorBuses {
             }
         }
 
+        /** Marca las paradas como atendidas por una ruta: allí la gente espera el micro. */
+        void registrarParadasRuta(List<PieroGNodo> paradas) {
+            registrar(paradas);
+            boolean nuevas = false;
+            for (PieroGNodo nodo : paradas) nuevas |= paradasRuta.putIfAbsent(nodo.id, nodo) == null;
+            if (nuevas) {
+                caminataCache.clear();
+                sinCobertura.keySet().removeIf(id -> {
+                    PieroGNodo zona = nodos.get(id);
+                    return zona != null && paradaMasCercana(zona) != null;
+                });
+            }
+        }
+
+        private record Destino(PieroGNodo parada, double metros) {}
+
+        /** Grupo que camina de su ubicación a una parada; al llegar se une a la cola de espera. */
+        private static final class Caminante {
+            final PieroGNodo origen;
+            final Destino destino;
+            final EberthMPoi poi;
+            final int cantidad;
+            final boolean transbordo;
+            double recorrido;
+
+            Caminante(PieroGNodo origen, Destino destino, EberthMPoi poi, int cantidad,
+                      boolean transbordo) {
+                this.origen = origen;
+                this.destino = destino;
+                this.poi = poi;
+                this.cantidad = cantidad;
+                this.transbordo = transbordo;
+            }
+        }
+
+        private Destino paradaMasCercana(PieroGNodo origen) {
+            return caminataCache.computeIfAbsent(origen.id, id -> {
+                Destino mejor = null;
+                for (PieroGNodo parada : paradasRuta.values()) {
+                    double d = distanciaMetros(origen, parada);
+                    if (d <= CAMINATA_MAXIMA_METROS && (mejor == null || d < mejor.metros)) {
+                        mejor = new Destino(parada, d);
+                    }
+                }
+                return mejor;
+            });
+        }
+
+        private static double distanciaMetros(PieroGNodo a, PieroGNodo b) {
+            return EberthMIndicePoi.distanciaPuntoSegmento(a.lon, a.lat, b.lon, b.lat, b.lon, b.lat);
+        }
+
+        int caminando() {
+            return caminando;
+        }
+
+        /** Avanza a los caminantes {@code segundos}; quien llega se une a la espera de su parada. */
+        void caminar(double segundos) {
+            if (caminantes.isEmpty()) return;
+            double metros = segundos * VELOCIDAD_CAMINATA_MPS;
+            var it = caminantes.iterator();
+            while (it.hasNext()) {
+                Caminante c = it.next();
+                c.recorrido += metros;
+                if (c.recorrido < c.destino.metros) continue;
+                it.remove();
+                caminando -= c.cantidad;
+                ColaEspera cola = esperando.get(c.destino.parada.id);
+                int admitidos = cola == null ? 0
+                        : cola.llegar(ultimoMinuto, c.cantidad, maximoPorParada, c.poi, c.transbordo);
+                abandonos += c.cantidad - admitidos; // parada llena: no cabe y se va
+            }
+        }
+
+        /**
+         * Posiciones {@code x, y, transbordo} de cada grupo que camina, interpoladas entre su
+         * origen y su parada ({@code transbordo} = 1 si va a su segundo micro).
+         */
+        double[] posicionesCaminantes() {
+            double[] xy = new double[caminantes.size() * 3];
+            int i = 0;
+            for (Caminante c : caminantes) {
+                double f = Math.min(1, c.recorrido / Math.max(1e-6, c.destino.metros));
+                xy[i++] = c.origen.x + (c.destino.parada.x - c.origen.x) * f;
+                xy[i++] = c.origen.y + (c.destino.parada.y - c.origen.y) * f;
+                xy[i++] = c.transbordo ? 1 : 0;
+            }
+            return xy;
+        }
+
         /** Pasajeros que llegaron juntos a una ubicación con el mismo destino (null = sin POI). */
         private static final class Grupo {
             final int minuto;
             final EberthMPoi destino;
+            /** Viene de bajar de otro micro: solo sube a uno que lo lleve directo a su destino. */
+            final boolean transbordo;
             int cantidad;
 
-            Grupo(int minuto, EberthMPoi destino, int cantidad) {
+            Grupo(int minuto, EberthMPoi destino, int cantidad, boolean transbordo) {
                 this.minuto = minuto;
                 this.destino = destino;
                 this.cantidad = cantidad;
+                this.transbordo = transbordo;
             }
         }
 
@@ -1214,18 +1659,30 @@ public final class EberthMSimuladorBuses {
             private int total;
             /** Pasajeros-minuto que llevan esperando los que ya subieron (para el promedio). */
             private long esperaSuma;
+            /** Pasajeros de transbordo que subieron: ya se contaron al subir al primer micro. */
+            private long reabordados;
 
             /** Agrega los pasajeros llegados en {@code minuto} que caben hasta {@code capacidad}. */
-            void llegar(int minuto, long cantidad, int capacidad, EberthMPoi destino) {
+            int llegar(int minuto, long cantidad, int capacidad, EberthMPoi destino,
+                       boolean transbordo) {
                 int admitidos = (int) Math.min(Math.max(0, cantidad), Math.max(0, capacidad - total));
-                if (admitidos == 0) return;
+                if (admitidos == 0) return 0;
                 Grupo ultimo = grupos.peekLast();
-                if (ultimo != null && ultimo.minuto == minuto && ultimo.destino == destino) {
+                if (ultimo != null && ultimo.minuto == minuto && ultimo.destino == destino
+                        && ultimo.transbordo == transbordo) {
                     ultimo.cantidad += admitidos;
                 } else {
-                    grupos.addLast(new Grupo(minuto, destino, admitidos));
+                    grupos.addLast(new Grupo(minuto, destino, admitidos, transbordo));
                 }
                 total += admitidos;
+                return admitidos;
+            }
+
+            /** Pasajeros en espera que vienen de un transbordo. */
+            int enTransbordo() {
+                int n = 0;
+                for (Grupo g : grupos) if (g.transbordo) n += g.cantidad;
+                return n;
             }
 
             /** Quita a quienes llevan esperando {@code paciencia} minutos o más. */
@@ -1244,17 +1701,19 @@ public final class EberthMSimuladorBuses {
              * Sube hasta {@code maximo} pasajeros cuyo destino sirve el vehículo (o sin destino);
              * los demás siguen esperando otro micro.
              */
-            int subir(int maximo, int minutoActual, java.util.function.Predicate<EberthMPoi> sirve,
+            int subir(int maximo, int minutoActual,
+                      java.util.function.BiPredicate<EberthMPoi, Boolean> sirve,
                       java.util.function.ObjIntConsumer<EberthMPoi> alSubir) {
                 int suben = 0;
                 var it = grupos.iterator();
                 while (suben < maximo && it.hasNext()) {
                     Grupo g = it.next();
-                    if (g.destino != null && !sirve.test(g.destino)) continue;
+                    if (g.destino != null && !sirve.test(g.destino, g.transbordo)) continue;
                     int toma = Math.min(maximo - suben, g.cantidad);
                     g.cantidad -= toma;
                     suben += toma;
                     esperaSuma += (long) toma * Math.max(0, minutoActual - g.minuto);
+                    if (g.transbordo) reabordados += toma;
                     alSubir.accept(g.destino, toma);
                     if (g.cantidad == 0) it.remove();
                 }
@@ -1270,9 +1729,13 @@ public final class EberthMSimuladorBuses {
         /** Cuántos POIs de cada categoría hay cerca de cada parada (caché; se vacía al cambiar POIs). */
         private final Map<Integer, int[]> poisCercanos = new HashMap<>();
 
+        /** Fracción de los usuarios diarios que viaja en cada minuto, según las horas punta configuradas. */
+        private double[] perfilMinuto;
+
         void setPerfil(EberthMParametrosCiudad ciudad, EberthMTipoDia dia) {
             this.perfilCiudad = ciudad;
             this.perfilDia = dia;
+            this.perfilMinuto = ciudad == null ? null : ciudad.perfilPorMinuto(dia);
         }
 
         private int[] categoriasCercanas(PieroGNodo nodo) {
@@ -1309,16 +1772,28 @@ public final class EberthMSimuladorBuses {
             if (porParametros) {
                 double media = java.util.Arrays.stream(porCategoria).average().orElse(1);
                 for (int i = 0; i < porCategoria.length; i++) porCategoria[i] /= Math.max(1e-9, media);
-                escalaHoraria = multiplicadorHorario * perfilDia.demandaGlobal();
+                // Densidad del minuto respecto a un reparto plano (1 = promedio): sale de las horas
+                // punta y del % de población en punta configurados, no de franjas fijas.
+                double densidad = perfilMinuto[Math.floorMod(minutoDelDia, MINUTOS_POR_DIA)];
+                // Hora punta forzada por el usuario: rige la densidad del minuto más cargado.
+                if (multiplicadorHorario >= EberthMPerfilHoraPunta.MULTIPLICADOR_HORA_PUNTA) {
+                    densidad = Math.max(densidad, java.util.Arrays.stream(perfilMinuto).max().orElse(densidad));
+                }
+                escalaHoraria = densidad * MINUTOS_POR_DIA * perfilDia.demandaGlobal();
             }
             // Tope literal por parada: quien no cabe se rinde y camina a otra parada.
             int tope = maximoPorParada;
             double porUbicacion = porParametros
                     ? demandaCiudadPorMinuto() / Math.max(1, esperando.size()) : PASAJEROS_POR_MINUTO;
-            double base = (double) minutos * porUbicacion * escala * escalaHoraria;
+            boolean porZonas = compartirZona != null;
+            double base = porZonas
+                    ? minutos * pasajerosHoraSimulados[Math.floorMod(minutoDelDia, MINUTOS_POR_DIA) / 60] / 60.0 * escala
+                    : (double) minutos * porUbicacion * escala * escalaHoraria;
             esperando.forEach((id, cola) -> {
                 abandonos += cola.rendirse(minutoSimulado, PACIENCIA_MINUTOS);
-                if (cola.total >= tope) return;
+                boolean servida = paradasRuta.containsKey(id);
+                // Sin parada de ruta cerca nadie sale a esperar: no hay generación.
+                Destino caminata = servida ? null : paradaMasCercana(nodos.get(id));
                 double factor = general;
                 if (!pois.estaVacio()) {
                     int[] cuenta = categoriasCercanas(nodos.get(id));
@@ -1330,48 +1805,165 @@ public final class EberthMSimuladorBuses {
                     }
                     if (total > 0) factor = suma / total;
                 }
+                // Calle residencial: gente solo en las horas de salida y regreso.
+                if (!servida && residenciales.containsKey(id) && !fisicas.contains(id)) factor = horaResidencial(minutoDelDia) ? 2.0 : 0.1;
                 factor = Math.min(factor, FACTOR_DEMANDA_MAXIMO);
+                // Con demanda de ciudad la gente nace solo en sus zonas, en proporción a su demanda.
+                if (porZonas) factor = compartirZona.getOrDefault(id, 0.0);
                 // Vendedores ambulantes cerca de la parada: aglomeración (+200 %).
                 double aglomeracion = eventos.isEmpty() ? 1.0
                         : EberthMAplicadorEventos.multiplicadorDemanda(nodos.get(id), eventos);
                 // long: con escala alta y tiempo acelerado el producto no cabe en un int.
                 double esperados = base * factor * aglomeracion;
                 // Redondeo aleatorio: una ubicación con 0,3 pasajeros/min recibe uno cada ~3 min.
-                long nuevos = porParametros
+                long nuevos = (porParametros || porZonas)
                         ? (long) esperados + (azar.nextDouble() < esperados - Math.floor(esperados) ? 1 : 0)
                         : Math.round(esperados);
+                if (!servida && caminata == null) {
+                    // Ninguna parada de ruta a ≤ 300 m: la demanda existe pero no hay transporte.
+                    if (nuevos > 0) registrarSinCobertura(id, nuevos);
+                    return;
+                }
+                generados += nuevos;
+                if (servida && cola.total >= tope) {
+                    // Parada llena: la gente que llega se va. Antes se descartaba sin contarla.
+                    abandonos += (int) Math.min(Integer.MAX_VALUE - abandonos, nuevos);
+                    return;
+                }
                 // Cada tanda se reparte en pocos grupos, cada uno con su POI destino.
                 int tandas = (int) Math.min(GRUPOS_POR_MINUTO, nuevos);
                 for (int i = 0; i < tandas; i++) {
                     long parte = nuevos / tandas + (i < nuevos % tandas ? 1 : 0);
-                    cola.llegar(minutoSimulado, parte, tope, sortearDestino(nodos.get(id)));
+                    EberthMPoi destino = porZonas ? destinoPorFlujo(id) : null;
+                    if (destino == null) destino = sortearDestino(nodos.get(id), minutoDelDia);
+                    if (servida) {
+                        int admitidos = cola.llegar(minutoSimulado, parte, tope, destino, false);
+                        abandonos += (int) (parte - admitidos);
+                    } else {
+                        caminantes.add(new Caminante(nodos.get(id), caminata, destino, (int) parte, false));
+                        caminando += (int) parte;
+                    }
                 }
             });
+        }
+
+        private void registrarSinCobertura(int idNodo, long cantidad) {
+            pasajerosSinCobertura += cantidad;
+            sinCobertura.merge(idNodo, (int) Math.min(Integer.MAX_VALUE, cantidad), Integer::sum);
+            if (sinCobertura.size() > MAX_ZONAS_SIN_COBERTURA * 2) {
+                // Se conservan solo las de mayor demanda para no crecer sin límite.
+                var mayores = sinCobertura.entrySet().stream()
+                        .sorted(Map.Entry.<Integer, Integer>comparingByValue().reversed())
+                        .limit(MAX_ZONAS_SIN_COBERTURA).toList();
+                Map<Integer, Integer> copia = new HashMap<>();
+                mayores.forEach(e -> copia.put(e.getKey(), e.getValue()));
+                sinCobertura.clear();
+                sinCobertura.putAll(copia);
+            }
+        }
+
+        int zonasSinCobertura() {
+            return sinCobertura.size();
+        }
+
+        long pasajerosSinCobertura() {
+            return pasajerosSinCobertura;
+        }
+
+        /** {@code x, y, pasajeros} de cada zona sin cobertura, ordenadas de mayor a menor demanda. */
+        double[] zonasSinCoberturaXY() {
+            var orden = sinCobertura.entrySet().stream()
+                    .sorted(Map.Entry.<Integer, Integer>comparingByValue().reversed())
+                    .limit(MAX_ZONAS_SIN_COBERTURA).toList();
+            double[] xy = new double[orden.size() * 3];
+            int i = 0;
+            for (var e : orden) {
+                PieroGNodo n = nodos.get(e.getKey());
+                xy[i++] = n.x;
+                xy[i++] = n.y;
+                xy[i++] = e.getValue();
+            }
+            return xy;
+        }
+
+        double[] zonasSinCoberturaLonLat() {
+            var orden = sinCobertura.entrySet().stream()
+                    .sorted(Map.Entry.<Integer, Integer>comparingByValue().reversed())
+                    .limit(MAX_ZONAS_SIN_COBERTURA).toList();
+            double[] datos = new double[orden.size() * 3];
+            int i = 0;
+            for (var e : orden) {
+                PieroGNodo n = nodos.get(e.getKey());
+                datos[i++] = n.lon;
+                datos[i++] = n.lat;
+                datos[i++] = e.getValue();
+            }
+            return datos;
+        }
+
+        /** Nombre del POI más cercano a la zona sin cobertura de mayor demanda (o coordenadas). */
+        String nombrePeorZona() {
+            var peor = sinCobertura.entrySet().stream().max(Map.Entry.comparingByValue());
+            if (peor.isEmpty()) return "";
+            PieroGNodo n = nodos.get(peor.get().getKey());
+            EberthMPoi cercano = null;
+            double mejor = Double.MAX_VALUE;
+            for (EberthMPoi poi : pois.cercanos(n.lon, n.lat, EberthMIndicePoi.RADIO_CAMINATA_METROS)) {
+                double d = distanciaMetros(n, poi.lon(), poi.lat());
+                if (d < mejor) { mejor = d; cercano = poi; }
+            }
+            return cercano != null ? cercano.nombre()
+                    : String.format("%.5f, %.5f", n.lat, n.lon);
+        }
+
+        private static double distanciaMetros(PieroGNodo a, double lon, double lat) {
+            return EberthMIndicePoi.distanciaPuntoSegmento(a.lon, a.lat, lon, lat, lon, lat);
+        }
+
+        /**
+         * Transbordo: {@code cantidad} pasajeros bajaron en {@code lugar} lejos de su destino.
+         * Caminan a la parada de ruta más cercana (≤ 300 m) a buscar un segundo micro; si no hay
+         * ninguna se rinden.
+         */
+        void transbordar(PieroGNodo lugar, EberthMPoi destino, int cantidad) {
+            if (cantidad <= 0) return;
+            Destino parada = paradaMasCercana(lugar);
+            if (parada == null) {
+                abandonos += cantidad;
+                return;
+            }
+            transbordos += cantidad;
+            caminantes.add(new Caminante(lugar, parada, destino, cantidad, true));
+            caminando += cantidad;
         }
 
         /**
          * Sube hasta {@code libres} pasajeros de la ubicación cuyo destino sirve el vehículo,
          * sea cual sea su ruta; el resto sigue esperando.
          */
-        int abordar(PieroGNodo parada, int libres, java.util.function.Predicate<EberthMPoi> sirve,
+        int abordar(PieroGNodo parada, int libres,
+                    java.util.function.BiPredicate<EberthMPoi, Boolean> sirve,
                     java.util.function.ObjIntConsumer<EberthMPoi> alSubir) {
             ColaEspera cola = esperando.get(parada.id);
             if (cola == null || libres <= 0) return 0;
             long esperaAntes = cola.esperaSuma;
+            long reabordosAntes = cola.reabordados;
             int suben = cola.subir(libres, ultimoMinuto, sirve, alSubir);
             esperaTotal += cola.esperaSuma - esperaAntes;
             abordadosConEspera += suben;
-            abordadosSinContar += suben;
+            // «Subieron» cuenta personas distintas: quien hace transbordo no vuelve a contarse.
+            abordadosSinContar += suben - (int) (cola.reabordados - reabordosAntes);
             return suben;
         }
 
         /** POI destino al azar a más de 400 m del origen (caminando no necesitaría micro); null sin POIs. */
-        private EberthMPoi sortearDestino(PieroGNodo origen) {
+        private EberthMPoi sortearDestino(PieroGNodo origen, int minutoDelDia) {
             List<EberthMPoi> todos = pois.todos();
             if (todos.isEmpty()) return null;
+            int hora = Math.floorMod(minutoDelDia, MINUTOS_POR_DIA) / 60;
             EberthMPoi poi = null;
             for (int intento = 0; intento < 5; intento++) {
-                poi = todos.get(azar.nextInt(todos.size()));
+                poi = EberthMGeneradorDemanda.sortearDestino(todos, hora, azar);
                 if (EberthMIndicePoi.distanciaPuntoSegmento(poi.lon(), poi.lat(), origen.lon, origen.lat,
                         origen.lon, origen.lat) > EberthMIndicePoi.RADIO_CAMINATA_METROS) break;
             }
@@ -1381,10 +1973,27 @@ public final class EberthMSimuladorBuses {
         /** Ubicaciones físicas (nodos junto a los POIs) donde aparece gente aunque ninguna ruta pase. */
         void setUbicacionesFisicas(List<PieroGNodo> ubicaciones) {
             this.ubicacionesFisicas = List.copyOf(ubicaciones);
+            fisicas.clear();
+            for (PieroGNodo n : ubicaciones) fisicas.add(n.id);
             registrar(this.ubicacionesFisicas);
         }
 
         private List<PieroGNodo> ubicacionesFisicas = List.of();
+        private final Map<Integer, PieroGNodo> residenciales = new HashMap<>();
+        /** Ids de las ubicaciones junto a un POI (no se tratan como origen solo residencial). */
+        private final java.util.Set<Integer> fisicas = new java.util.HashSet<>();
+
+        /** Salida al trabajo/estudio (06:00-09:00) y regreso (17:00-20:00) desde calles residenciales. */
+        private static boolean horaResidencial(int minutoDelDia) {
+            return (minutoDelDia >= 6 * 60 && minutoDelDia < 9 * 60)
+                    || (minutoDelDia >= 17 * 60 && minutoDelDia < 20 * 60);
+        }
+
+        void setOrigenesResidenciales(List<PieroGNodo> nodosResidenciales) {
+            residenciales.clear();
+            for (PieroGNodo n : nodosResidenciales) residenciales.put(n.id, n);
+            registrar(nodosResidenciales);
+        }
 
         private EberthMIndicePoi pois = EberthMIndicePoi.VACIO;
 
@@ -1410,6 +2019,16 @@ public final class EberthMSimuladorBuses {
             return abandonos;
         }
 
+        long generados() {
+            return generados;
+        }
+
+        /** Pasajeros que subieron pero no tienen dónde bajar: deshacen el abordaje y se rinden. */
+        void deshacerAbordaje(int cantidad) {
+            abordadosSinContar -= cantidad;
+            abandonos += cantidad;
+        }
+
         int retirarAbordados() {
             int n = abordadosSinContar;
             abordadosSinContar = 0;
@@ -1420,7 +2039,7 @@ public final class EberthMSimuladorBuses {
             List<EberthMParadaEspera> lista = new ArrayList<>(esperando.size());
             esperando.forEach((id, cola) -> {
                 PieroGNodo nodo = nodos.get(id);
-                lista.add(new EberthMParadaEspera(nodo.x, nodo.y, cola.total));
+                lista.add(new EberthMParadaEspera(nodo.x, nodo.y, cola.total, cola.enTransbordo()));
             });
             return lista;
         }

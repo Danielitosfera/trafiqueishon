@@ -16,6 +16,8 @@ public class PieroGEdge {
     public volatile double factorTrafico = 1.0;
     public volatile double factorHoraPunta = 1.0;
     public volatile boolean cerrado;
+    /** Micros por hora que admite el tramo; se hereda de {@link PieroGVia#flujoMaximo}. */
+    public int flujoMaximo = PieroGVia.FLUJO_MAXIMO_POR_DEFECTO;
 
     public PieroGEdge(int id, PieroGNodo origen, PieroGNodo destino, double longitud,
                 String highway, String name, int maxspeed, boolean oneway,
@@ -42,10 +44,11 @@ public class PieroGEdge {
             case "primary", "primary_link" -> 60;
             case "secondary", "secondary_link" -> 50;
             case "tertiary", "tertiary_link" -> 40;
-            case "residential" -> 30;
+            case "residential" -> 25;
             case "unclassified" -> 40;
             case "service" -> 20;
-            case "living_street" -> 15;
+            case "living_street" -> 20;
+            case "pedestrian" -> 10;
             default -> 30;
         };
     }

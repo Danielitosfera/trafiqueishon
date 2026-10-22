@@ -73,4 +73,33 @@ class EberthMGeneradorEventosTest {
         sinSuerte.setVias(List.of(via(1, "primary")));
         assertTrue(sinSuerte.generar(1, true, ciudad).isEmpty());
     }
+
+    @Test
+    void laProbabilidadDeLluviaDeLaCiudadEsLaFraccionDeTiempoLloviendo() {
+        // Con 35 % la tasa por minuto es a / duración media (a ≈ 0,44 con 2 plazas), no 0,35.
+        double carga = Math.sqrt(1.35 / 0.65) - 1;
+        assertEquals(carga / EberthMGeneradorEventos.DURACION_MEDIA_LLUVIA_MIN,
+                EberthMGeneradorEventos.probabilidadLluvia(35), 1e-12);
+        assertEquals(0, EberthMGeneradorEventos.probabilidadLluvia(0), 0);
+        assertTrue(Double.isFinite(EberthMGeneradorEventos.probabilidadLluvia(100)));
+    }
+
+    @Test
+    void laCiudadLlueveAproximadamenteElPorcentajeConfiguradoDelTiempo() {
+        for (double porcentaje : new double[]{10, 35, 60}) {
+            var gen = new EberthMGeneradorEventos(new java.util.Random(2024));
+            gen.setVias(List.of(via(1, "primary")));
+            var ciudad = EberthMParametrosCiudad.porDefecto(PieroGCiudadMapa.JULIACA);
+            ciudad.setProbabilidadLluvia(porcentaje);
+            java.util.Set<EberthMEventoTrafico> lluvias = new java.util.HashSet<>();
+            int minutos = 300_000, lloviendo = 0;
+            for (int m = 1; m <= minutos; m++) {
+                lluvias.removeAll(gen.expirados(m));
+                gen.generar(m, false, ciudad).stream()
+                        .filter(e -> e.tipo() == EberthMTipoEvento.LLUVIA).forEach(lluvias::add);
+                if (!lluvias.isEmpty()) lloviendo++;
+            }
+            assertEquals(porcentaje, 100.0 * lloviendo / minutos, 2.0, "lluvia " + porcentaje + " %");
+        }
+    }
 }

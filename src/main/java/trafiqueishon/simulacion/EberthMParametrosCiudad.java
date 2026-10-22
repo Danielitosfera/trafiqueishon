@@ -36,9 +36,33 @@ public final class EberthMParametrosCiudad {
     private double porcentajeJubilados = 25;
     private int capacidadMaximaParada = CAPACIDAD_PARADA_POR_DEFECTO;
     private String horasPuntaFinSemana = "11:00-14:00, 18:00-21:00";
+    private double porcentajePoblacionEnPunta = PORCENTAJE_POBLACION_PUNTA_POR_DEFECTO;
 
     public static final int CAPACIDAD_PARADA_POR_DEFECTO = 150;
+    /** % de la población total que viaja dentro de las horas punta (tope: todos los usuarios del transporte). */
+    public static final double PORCENTAJE_POBLACION_PUNTA_POR_DEFECTO = 30;
+    /** Ni siquiera con el máximo de gente en punta se vacían del todo las horas valle. */
+    private static final double FRACCION_MAXIMA_EN_PUNTA = 0.95;
+    private static final int MINUTOS_DIA = 24 * 60;
     public static final int CAPACIDAD_PARADA_MAXIMA = 10_000;
+
+    /** Población por defecto de una ciudad sin parámetros propios (mapa importado nuevo). */
+    public static final long POBLACION_POR_DEFECTO = 500_000;
+    public static final double TRANSPORTE_POR_DEFECTO = 50;
+    /**
+     * Fracción de los viajes diarios en transporte público que cae en la hora de mayor demanda.
+     * Orden de magnitud habitual en planes de movilidad urbana (10-15 %); es una estimación,
+     * no un dato medido de la ciudad: conviene calibrarla con aforos.
+     */
+    public static final double FRACCION_HORA_PICO = EberthMGeneradorDemanda.PICO_MANANA / 2;
+    /**
+     * Cuántos habitantes que usan transporte público representa cada pasajero simulado. Lo
+     * comparten la generación de demanda en las paradas y el dimensionado de flota, para que
+     * la flota calculada atienda la misma gente que aparece en pantalla.
+     */
+    public static final double ESCALA_POBLACION_SIMULADA = 10;
+    public static final long POBLACION_FRECUENCIA_ALTA = 1_000_000;
+    public static final long POBLACION_FRECUENCIA_MEDIA = 500_000;
 
     public EberthMParametrosCiudad(long poblacionTotal, double porcentajeTransportePublico,
                                    String horasPunta, double probabilidadLluvia,
@@ -72,9 +96,106 @@ public final class EberthMParametrosCiudad {
             case "lima" -> new EberthMParametrosCiudad(10_000_000, 70,
                     "06:30-09:30, 17:30-20:30", 5, TasaAccidentes.ALTA,
                     22, 58, 20, CAPACIDAD_PARADA_POR_DEFECTO);
-            default -> new EberthMParametrosCiudad(200_000, 60,
+            default -> new EberthMParametrosCiudad(POBLACION_POR_DEFECTO, TRANSPORTE_POR_DEFECTO,
                     "07:00-09:00, 17:00-19:00", 20, TasaAccidentes.MEDIA);
         };
+    }
+
+    /** Usuarios diarios de transporte público: población × % de uso. */
+    public double usuariosTransporteDiarios() {
+        return poblacionTotal * porcentajeTransportePublico / 100.0;
+    }
+
+    /** Personas que viajan en transporte público durante la hora de mayor demanda (día laboral). */
+    public double demandaPicoHora() {
+        return usuariosTransporteDiarios() * fraccionHorariaPico(EberthMTipoDia.LABORAL);
+    }
+
+    /**
+     * Perfil de demanda del día: fracción de los usuarios diarios que viaja en cada minuto (suma 1).
+     * La gente que viaja en hora punta ({@link #getPorcentajePoblacionEnPunta()} de la población,
+     * como mucho todos los usuarios) se reparte por igual dentro de las horas punta configuradas;
+     * el resto, fuera de ellas, con poca actividad de madrugada (22:00-05:00).
+     */
+    public double[] perfilPorMinuto(EberthMTipoDia dia) {
+        boolean[] punta = new boolean[MINUTOS_DIA];
+        int minutosPunta = 0;
+        String rangos = dia.esLaboral() ? horasPunta : horasPuntaFinSemana;
+        for (int[] r : interpretarHorasPunta(rangos)) {
+            for (int m = 0; m < MINUTOS_DIA; m++) {
+                boolean dentro = r[0] <= r[1] ? m >= r[0] && m < r[1] : m >= r[0] || m < r[1];
+                if (dentro && !punta[m]) {
+                    punta[m] = true;
+                    minutosPunta++;
+                }
+            }
+        }
+        double usuarios = usuariosTransporteDiarios();
+        double enPunta = minutosPunta == 0 || usuarios <= 0 ? 0
+                : Math.min(FRACCION_MAXIMA_EN_PUNTA, poblacionTotal * porcentajePoblacionEnPunta / 100.0 / usuarios);
+        double pesoValle = 0;
+        for (int m = 0; m < MINUTOS_DIA; m++) {
+            if (!punta[m]) pesoValle += m < 5 * 60 || m >= 22 * 60 ? 0.1 : 1.0;
+        }
+        double[] perfil = new double[MINUTOS_DIA];
+        for (int m = 0; m < MINUTOS_DIA; m++) {
+            perfil[m] = punta[m] ? enPunta / minutosPunta
+                    : (m < 5 * 60 || m >= 22 * 60 ? 0.1 : 1.0) * (1 - enPunta) / Math.max(1e-9, pesoValle);
+        }
+        return perfil;
+    }
+
+    /** Fracción de los usuarios diarios que viaja en la hora indicada. */
+    public double fraccionHoraria(int hora, EberthMTipoDia dia) {
+        return fraccionesHorarias(dia)[Math.floorMod(hora, 24)];
+    }
+
+    /** Fracción de los usuarios diarios en cada una de las 24 horas. */
+    public double[] fraccionesHorarias(EberthMTipoDia dia) {
+        double[] perfil = perfilPorMinuto(dia);
+        double[] horas = new double[24];
+        for (int m = 0; m < MINUTOS_DIA; m++) horas[m / 60] += perfil[m];
+        return horas;
+    }
+
+    /** Fracción de los usuarios diarios que viaja en la hora más cargada. */
+    public double fraccionHorariaPico(EberthMTipoDia dia) {
+        double max = 0;
+        for (double f : fraccionesHorarias(dia)) max = Math.max(max, f);
+        return max;
+    }
+
+    public double getPorcentajePoblacionEnPunta() {
+        return porcentajePoblacionEnPunta;
+    }
+
+    public void setPorcentajePoblacionEnPunta(double porcentaje) {
+        this.porcentajePoblacionEnPunta = porcentajeValido(porcentaje, "El porcentaje de población en hora punta");
+    }
+
+    /** Pasajeros simulados en la hora de mayor demanda (personas ÷ {@link #escalaPoblacionSimulada()}). */
+    public double demandaPicoSimuladaHora() {
+        return demandaPicoHora() / escalaPoblacionSimulada();
+    }
+
+    /** Usuarios simulados por día a los que apunta la escala para que cualquier ciudad sea manejable. */
+    public static final double USUARIOS_SIMULADOS_DIA_OBJETIVO = 50_000;
+
+    /**
+     * Habitantes que representa cada pasajero simulado. Es {@value #ESCALA_POBLACION_SIMULADA}
+     * como mínimo y crece en ciudades muy grandes para que el total simulado por día no pase de
+     * unos {@value #USUARIOS_SIMULADOS_DIA_OBJETIVO}: así un mapa nuevo, pequeño o enorme, rinde igual.
+     */
+    public double escalaPoblacionSimulada() {
+        return Math.max(ESCALA_POBLACION_SIMULADA,
+                Math.ceil(usuariosTransporteDiarios() / USUARIOS_SIMULADOS_DIA_OBJETIVO));
+    }
+
+    /** Frecuencia de salida base según el tamaño de la ciudad: 5 min (&gt; 1 M), 8 min (&gt; 500 mil), 10 min. */
+    public int frecuenciaBaseMinutos() {
+        if (poblacionTotal > POBLACION_FRECUENCIA_ALTA) return 5;
+        if (poblacionTotal > POBLACION_FRECUENCIA_MEDIA) return 8;
+        return 10;
     }
 
     public EberthMParametrosCiudad copia() {
@@ -83,6 +204,7 @@ public final class EberthMParametrosCiudad {
                 porcentajeEstudiantes, porcentajeTrabajadores, porcentajeJubilados,
                 capacidadMaximaParada);
         c.horasPuntaFinSemana = horasPuntaFinSemana;
+        c.porcentajePoblacionEnPunta = porcentajePoblacionEnPunta;
         return c;
     }
 

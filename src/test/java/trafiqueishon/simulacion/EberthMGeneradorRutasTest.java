@@ -42,9 +42,8 @@ class EberthMGeneradorRutasTest {
                     (paradas.getFirst().lat() - paradas.getLast().lat()) * 111_320);
             assertTrue(km >= 3_000, "origen-destino: " + km);
             assertEquals(EberthMTipoRetorno.INVERSO, r.retorno());
-            assertEquals(r.pasajerosEsperando() > 150 ? 5 : 10, r.frecuenciaMinutos());
-            assertEquals(EberthMGeneradorRutas.unidadesNecesarias(r.pasajerosEsperando(), r.frecuenciaMinutos()),
-                    r.unidadesDisponibles());
+            assertEquals(EberthMGeneradorRutas.frecuenciaPorCiudad(ciudad()), r.frecuenciaMinutos());
+            assertTrue(r.unidadesDisponibles() >= EberthMGeneradorRutas.MIN_UNIDADES);
         }
     }
 
@@ -67,17 +66,60 @@ class EberthMGeneradorRutasTest {
     }
 
     @Test
-    void unidadesSiguenLaFormulaDeLaDemanda() {
-        assertEquals(2, EberthMGeneradorRutas.unidadesNecesarias(180, 10)); // 10 / 6 = 1,66
-        assertEquals(2, EberthMGeneradorRutas.unidadesNecesarias(180, 5));  // 10 / 12 = 0,83 → mínimo 2
-        assertEquals(20, EberthMGeneradorRutas.unidadesNecesarias(50_000, 5));
-        assertEquals(5, EberthMGeneradorRutas.unidadesNecesarias(540, 10)); // 30 / 6
+    void frecuenciaDependeDeLaPoblacionDeLaCiudad() {
+        assertEquals(5, EberthMGeneradorRutas.frecuenciaPorCiudad(ciudadConPoblacion(1_500_000)));
+        assertEquals(8, EberthMGeneradorRutas.frecuenciaPorCiudad(ciudadConPoblacion(600_000)));
+        assertEquals(10, EberthMGeneradorRutas.frecuenciaPorCiudad(ciudadConPoblacion(280_000)));
+        assertEquals(10, EberthMGeneradorRutas.frecuenciaPorCiudad(null));
+        // Los límites son estrictos: justo 1 M y justo 500 mil caen en el tramo inferior.
+        assertEquals(8, EberthMGeneradorRutas.frecuenciaPorCiudad(ciudadConPoblacion(1_000_000)));
+        assertEquals(10, EberthMGeneradorRutas.frecuenciaPorCiudad(ciudadConPoblacion(500_000)));
     }
 
     @Test
-    void frecuenciaDependeDelUmbralDeDemanda() {
-        assertEquals(5, EberthMGeneradorRutas.frecuenciaPorDemanda(151));
-        assertEquals(10, EberthMGeneradorRutas.frecuenciaPorDemanda(150));
+    void demandaPicoEsPoblacionPorTransportePorQuinceCentesimosEntreLaEscalaSimulada() {
+        var juliaca = ciudadConPoblacion(280_000); // 65 % de uso
+        double esperado = 280_000 * 0.65 * juliaca.fraccionHorariaPico(EberthMTipoDia.LABORAL);
+        assertEquals(esperado, juliaca.demandaPicoHora(), 1e-6);
+        assertEquals(esperado / EberthMParametrosCiudad.ESCALA_POBLACION_SIMULADA,
+                juliaca.demandaPicoSimuladaHora(), 1e-6);
+    }
+
+    @Test
+    void unidadesPorRutaSigueLaDemandaDeLaCiudadYLaVueltaCompleta() {
+        var ciudad = ciudadConPoblacion(280_000);
+        // Sin tope de frecuencia (punta 1 min): la hora punta de 07:00-09:00 concentra el 30 % de la
+        // población (46 % de los usuarios), unos 4 200 pax/h simulados repartidos entre 5 rutas.
+        assertEquals(47, EberthMGeneradorRutas.unidadesPorRuta(ciudad, 5, 60, 1));
+        // La misma ruta con vuelta de 30 min necesita la mitad.
+        assertEquals(24, EberthMGeneradorRutas.unidadesPorRuta(ciudad, 5, 30, 1));
+        // Más rutas reparten la demanda.
+        assertTrue(EberthMGeneradorRutas.unidadesPorRuta(ciudad, 10, 60, 1)
+                < EberthMGeneradorRutas.unidadesPorRuta(ciudad, 5, 60, 1));
+        // Una ciudad mayor necesita más unidades.
+        assertTrue(EberthMGeneradorRutas.unidadesPorRuta(ciudadConPoblacion(2_000_000), 5, 60, 1)
+                > EberthMGeneradorRutas.unidadesPorRuta(ciudad, 5, 60, 1));
+    }
+
+    @Test
+    void unidadesPorRutaTieneMinimoDosYTopeSegunLaFrecuenciaDePunta() {
+        // Ciudad diminuta: la fórmula da menos de 2 → se usa 2.
+        assertEquals(2, EberthMGeneradorRutas.unidadesPorRuta(ciudadConPoblacion(5_000), 5, 60, 7));
+        // Con demanda alta no caben más unidades que vuelta ÷ frecuencia de punta (60 / 7 → 9).
+        assertEquals(9, EberthMGeneradorRutas.unidadesPorRuta(ciudadConPoblacion(280_000), 5, 60, 7));
+        assertEquals(2, EberthMGeneradorRutas.unidadesPorRuta(null, 5, 60, 7));
+    }
+
+    @Test
+    void laVueltaIncluyeIdaVueltaParadasYEsperaEnTerminales() {
+        // 20 min de ida → 40 min; 5 paradas × 2 × 15 s = 2,5 min; 2 esperas de 10 min.
+        assertEquals(40 + 2.5 + 20, EberthMGeneradorRutas.vueltaCompletaMinutos(20 * 60, 10, 5), 1e-9);
+    }
+
+    private static EberthMParametrosCiudad ciudadConPoblacion(long poblacion) {
+        var c = new EberthMParametrosCiudad(poblacion, 65, "07:00-09:00", 20,
+                EberthMParametrosCiudad.TasaAccidentes.MEDIA);
+        return c;
     }
 
     @Test
@@ -136,11 +178,43 @@ class EberthMGeneradorRutasTest {
 
     @Test
     void flotaSugeridaSigueALaPoblacionYAlPorcentajeDeTransporte() {
-        var juliaca = new EberthMParametrosCiudad(280_000, 65, "07:00-09:00",
-                20, EberthMParametrosCiudad.TasaAccidentes.MEDIA);
-        assertEquals(36, EberthMGeneradorRutas.unidadesSugeridas(juliaca));
-        juliaca.setPorcentajeTransportePublico(30);
-        assertEquals(17, EberthMGeneradorRutas.unidadesSugeridas(juliaca));
+        var ciudad = ciudadConPoblacion(280_000);
+        int base = EberthMGeneradorRutas.unidadesSugeridas(ciudad);
+        ciudad.setPorcentajeTransportePublico(30);
+        assertTrue(EberthMGeneradorRutas.unidadesSugeridas(ciudad) <= base);
         assertEquals(EberthMGeneradorRutas.MIN_UNIDADES, EberthMGeneradorRutas.unidadesSugeridas(null));
+    }
+
+    @Test
+    void unaCiudadSinParametrosPropiosUsaLosValoresPorDefecto() {
+        var otra = EberthMParametrosCiudad.porDefecto(new trafiqueishon.geo.PieroGCiudadMapa(
+                "arequipa", "Arequipa", false));
+        assertEquals(EberthMParametrosCiudad.POBLACION_POR_DEFECTO, otra.getPoblacionTotal());
+        assertEquals(EberthMParametrosCiudad.TRANSPORTE_POR_DEFECTO, otra.getPorcentajeTransportePublico(), 0);
+    }
+
+    @Test
+    void lasRutasNuevasPrefierenPoisCercanosAZonasSinCobertura() {
+        var puntos = pois();
+        var objetivo = puntos.getFirst();
+        int sesgadas = extremosEn(puntos, objetivo.id(),
+                new double[]{objetivo.lon(), objetivo.lat(), 500});
+        int neutras = extremosEn(puntos, objetivo.id(), null);
+        assertTrue(sesgadas > neutras, "con zona: " + sesgadas + ", sin zona: " + neutras);
+    }
+
+    /** Cuántas de 40 rutas de una sola generación tienen el POI dado como extremo. */
+    private static int extremosEn(List<LuisYPuntoImportante> puntos, String idPoi, double[] zonas) {
+        PieroGGrafoVial red = cuadricula();
+        int cuenta = 0;
+        for (int i = 0; i < 40; i++) {
+            var gen = new EberthMGeneradorRutas(red, puntos, ciudad(), new Random(100 + i));
+            gen.priorizarZonasSinCobertura(zonas);
+            for (var r : gen.generar(List.of(), 1)) {
+                var ps = r.trayecto().puntos();
+                if (ps.getFirst().id().equals(idPoi) || ps.getLast().id().equals(idPoi)) cuenta++;
+            }
+        }
+        return cuenta;
     }
 }

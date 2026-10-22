@@ -3,6 +3,7 @@ package trafiqueishon.simulacion;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -35,7 +36,12 @@ public final class EberthMMotorSimulacion implements AutoCloseable {
                               int pasajerosTransportados, double ocupacionPromedio,
                               int vehiculosConIncidencia, long version,
                               List<EberthMParadaEspera> paradas,
-                              double esperaPromedioMin, int pasajerosAbandonaron) {
+                              double esperaPromedioMin, int pasajerosAbandonaron,
+                              int pasajerosBajaron, int pasajerosCaminando,
+                              double[] caminantes, int zonasSinCobertura,
+                              int pasajerosSinCobertura, int transbordos,
+                              double[] zonasSinCoberturaXY, String peorZonaSinCobertura,
+                              long pasajerosGenerados) {
         public static final Instantanea VACIA =
                 new Instantanea(List.of(), false, false, 0, 0, 0, 0, 0, 0, List.of());
 
@@ -46,12 +52,13 @@ public final class EberthMMotorSimulacion implements AutoCloseable {
                            List<EberthMParadaEspera> paradas) {
             this(vehiculos, ejecutando, haySimulacion, horaMinutos, segundosSimulados,
                     pasajerosTransportados, ocupacionPromedio, vehiculosConIncidencia, version,
-                    paradas, 0, 0);
+                    paradas, 0, 0, 0, 0, new double[0], 0, 0, 0, new double[0], "", 0);
         }
     }
 
     private final EberthMSimuladorBuses simulador;
     private final ScheduledExecutorService hilo;
+    private final ExecutorService hilosAstar;
     private volatile Instantanea instantanea = Instantanea.VACIA;
     private volatile Consumer<Throwable> onError;
     private long ultimoPasoNanos;
@@ -73,6 +80,14 @@ public final class EberthMMotorSimulacion implements AutoCloseable {
             t.setDaemon(true);
             return t;
         });
+        // Los desvíos A* se calculan fuera del hilo de simulación: el micro espera sin congelar nada.
+        this.hilosAstar = autoAvance ? Executors.newFixedThreadPool(
+                Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors() - 1)), r -> {
+                    Thread t = new Thread(r, "astar-desvios");
+                    t.setDaemon(true);
+                    return t;
+                }) : null;
+        if (hilosAstar != null) simulador.setEjecutorDesvios(hilosAstar);
         if (autoAvance) {
             long periodo = 1_000_000_000L / PASOS_POR_SEGUNDO;
             hilo.scheduleAtFixedRate(this::paso, periodo, periodo, TimeUnit.NANOSECONDS);
@@ -162,11 +177,21 @@ public final class EberthMMotorSimulacion implements AutoCloseable {
                 ++version,
                 simulador.paradasEnEspera(),
                 simulador.esperaPromedioMinutos(),
-                simulador.pasajerosAbandonaron());
+                simulador.pasajerosAbandonaron(),
+                simulador.pasajerosBajaron(),
+                simulador.pasajerosCaminando(),
+                simulador.posicionesCaminantes(),
+                simulador.zonasSinCobertura(),
+                simulador.pasajerosSinCobertura(),
+                simulador.transbordos(),
+                simulador.zonasSinCoberturaXY(),
+                simulador.peorZonaSinCobertura(),
+                simulador.pasajerosGenerados());
     }
 
     @Override
     public void close() {
         hilo.shutdownNow();
+        if (hilosAstar != null) hilosAstar.shutdownNow();
     }
 }

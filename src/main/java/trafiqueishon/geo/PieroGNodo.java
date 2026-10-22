@@ -16,6 +16,8 @@ public class PieroGNodo {
     public final List<PieroGEdge> entrantes = new ArrayList<>(3);
     /** Semáforo averiado: los vehículos deben detenerse al cruzar este nodo. */
     public volatile boolean semaforoRoto;
+    /** Policía de tránsito en la intersección: la luz roja de su semáforo dura la mitad. */
+    public volatile boolean policiaTransito;
     /** Semáforo de la intersección; {@code null} si el nodo no cumple los criterios de {@link PieroGGrafoVial#regenerarSemaforos}. */
     public volatile EberthMSemaforo semaforo;
 

@@ -19,6 +19,10 @@ public final class EberthMDespachador {
     private final EberthMDemandaPasajeros demanda;
     private int unidadesDespachadas;
     private double proximoDespacho;
+    private boolean salidaRetrasada;
+
+    /** Tope de espera por una vía saturada; pasado ese tiempo la unidad sale igualmente. */
+    public static final double ESPERA_MAXIMA_SATURACION_SEGUNDOS = 600;
 
     public EberthMDespachador(EberthMServicioMicro servicio) {
         this(servicio, 1);
@@ -57,9 +61,30 @@ public final class EberthMDespachador {
      */
     public Optional<Salida> siguienteSalida(double segundosTranscurridos, double multiplicadorDemanda,
                                             boolean horaPunta) {
+        return siguienteSalida(segundosTranscurridos, multiplicadorDemanda, horaPunta, desdeFinal -> true);
+    }
+
+    /**
+     * Igual que la anterior, pero la unidad espera en el terminal mientras alguna vía de su
+     * ruta esté saturada ({@code rutaLibre} recibe si sale del terminal final), hasta
+     * {@link #ESPERA_MAXIMA_SATURACION_SEGUNDOS}. Una salida retrasada reinicia el intervalo
+     * desde su salida real, para que las unidades retenidas no salgan todas juntas.
+     */
+    public Optional<Salida> siguienteSalida(double segundosTranscurridos, double multiplicadorDemanda,
+                                            boolean horaPunta,
+                                            java.util.function.Predicate<Boolean> rutaLibre) {
         if (terminado() || proximoDespacho > segundosTranscurridos) return Optional.empty();
-        int abordados = demanda.abordarEnSalida(multiplicadorDemanda);
         boolean saleDelFinal = servicio.tieneRetorno() && unidadesDespachadas % 2 == 1;
+        if (segundosTranscurridos - proximoDespacho < ESPERA_MAXIMA_SATURACION_SEGUNDOS
+                && !rutaLibre.test(saleDelFinal)) {
+            salidaRetrasada = true;
+            return Optional.empty();
+        }
+        if (salidaRetrasada) {
+            proximoDespacho = segundosTranscurridos;
+            salidaRetrasada = false;
+        }
+        int abordados = demanda.abordarEnSalida(multiplicadorDemanda);
         Salida salida = new Salida(unidadesDespachadas, saleDelFinal, abordados);
         unidadesDespachadas++;
         boolean primeraConMas = unidadesDespachadas == 1 && servicio.unidadesDisponibles() > 1;

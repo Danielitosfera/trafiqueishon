@@ -19,11 +19,11 @@ public class PieroGGrafoVial {
     private MapaLongInt snapIndex = new MapaLongInt(16);
     private RejillaNodos rejilla = RejillaNodos.vacia();
 
-    private static final double RADIO_PUNTO_CRITICO_M = 50.0;
     private static final double SEPARACION_SEMAFOROS_M = 150.0;
-    private final List<PieroGNodo> interseccionesAvenidas = new ArrayList<>();
     private volatile List<PieroGNodo> semaforosActuales = List.of();
     private volatile int versionSemaforos;
+    private boolean horaPuntaSemaforos;
+    private double escalaTiempoSemaforos = 1.0;
 
     private double minLon, minLat, maxLon, maxLat;
     private double velocidadMaximaMps = 1.0;
@@ -80,39 +80,15 @@ public class PieroGGrafoVial {
             velocidadMaximaMps = Math.max(velocidadMaximaMps, edge.velocidadLibreMps());
         }
 
-        interseccionesAvenidas.clear();
         semaforosActuales = List.of();
         for (PieroGNodo n : nodos) {
             n.compactar();
-            if (esInterseccionDeAvenidas(n)) interseccionesAvenidas.add(n);
         }
         ((ArrayList<PieroGNodo>) nodos).trimToSize();
         ((ArrayList<PieroGEdge>) edges).trimToSize();
         rejilla = RejillaNodos.construir(nodos);
         snapIndex = new MapaLongInt(16);
         regenerarSemaforos(List.of());
-    }
-
-    private static boolean esAvenida(String highway) {
-        return "primary".equals(highway) || "secondary".equals(highway);
-    }
-
-    /**
-     * Intersección de al menos dos avenidas distintas. Las vías se distinguen por nombre
-     * (o ref); si no tienen, hacen falta al menos tres vecinos de avenida (cruce o T).
-     */
-    private static boolean esInterseccionDeAvenidas(PieroGNodo n) {
-        Set<String> vias = new HashSet<>();
-        Set<PieroGNodo> vecinos = new HashSet<>();
-        for (int i = 0; i < n.salientes.size() + n.entrantes.size(); i++) {
-            boolean saliente = i < n.salientes.size();
-            PieroGEdge e = saliente ? n.salientes.get(i) : n.entrantes.get(i - n.salientes.size());
-            if (!esAvenida(e.highway)) continue;
-            vecinos.add(saliente ? e.destino : e.origen);
-            String clave = e.name != null && !e.name.isBlank() ? e.name : e.ref;
-            if (clave != null && !clave.isBlank()) vias.add(clave);
-        }
-        return vias.size() >= 2 || vecinos.size() >= 3;
     }
 
     /** Nodos con semáforo vigentes (copia ordenada por x, lista para recortar al viewport). */
@@ -122,21 +98,36 @@ public class PieroGGrafoVial {
     public int getVersionSemaforos() { return versionSemaforos; }
 
     /**
-     * Recalcula qué nodos tienen semáforo: los más cercanos (hasta 50 m) a cada punto crítico
-     * y las intersecciones de avenidas, descartando los que queden a menos de 150 m de otro.
+     * Recalcula qué nodos tienen semáforo: solo los cruces de al menos dos rutas de micros
+     * distintas, descartando los que queden a menos de 150 m de otro (se prefiere el cruce
+     * con más rutas). Sin rutas no hay semáforos; al quitar una ruta sus cruces desaparecen.
      *
-     * @param criticos puntos {@code {lon, lat}} de hospitales, colegios y mercados
+     * @param rutas un elemento por ruta de micro, con todos sus tramos (ida y vuelta)
      */
-    public synchronized void regenerarSemaforos(List<double[]> criticos) {
+    public synchronized void regenerarSemaforos(List<List<PieroGEdge>> rutas) {
         for (PieroGNodo n : semaforosActuales) n.semaforo = null;
-        List<PieroGNodo> candidatos = new ArrayList<>();
-        for (double[] punto : criticos) {
-            PieroGNodo n = nodoMasCercanoLonLat(punto[0], punto[1]);
-            if (n != null && distanciaMetros(punto[0], punto[1], n.lon, n.lat) <= RADIO_PUNTO_CRITICO_M) {
-                candidatos.add(n);
+        Map<PieroGNodo, Integer> rutasPorNodo = new HashMap<>();
+        // Rutas que llegan a cada nodo por un acceso horizontal / vertical (demanda de cada fase).
+        Map<PieroGNodo, Integer> demandaH = new HashMap<>(), demandaV = new HashMap<>();
+        for (List<PieroGEdge> ruta : rutas) {
+            Set<PieroGNodo> propios = new HashSet<>();
+            Set<PieroGNodo> llegaH = new HashSet<>(), llegaV = new HashSet<>();
+            for (PieroGEdge e : ruta) {
+                propios.add(e.origen);
+                propios.add(e.destino);
+                (EberthMSemaforo.Eje.de(e) == EberthMSemaforo.Eje.HORIZONTAL ? llegaH : llegaV).add(e.destino);
             }
+            for (PieroGNodo n : propios) rutasPorNodo.merge(n, 1, Integer::sum);
+            for (PieroGNodo n : llegaH) demandaH.merge(n, 1, Integer::sum);
+            for (PieroGNodo n : llegaV) demandaV.merge(n, 1, Integer::sum);
         }
-        candidatos.addAll(interseccionesAvenidas);
+        List<PieroGNodo> candidatos = new ArrayList<>();
+        for (Map.Entry<PieroGNodo, Integer> e : rutasPorNodo.entrySet()) {
+            if (e.getValue() >= 2) candidatos.add(e.getKey());
+        }
+        // Más rutas primero; el id desempata para que el resultado sea estable.
+        candidatos.sort(Comparator.<PieroGNodo>comparingInt(n -> -rutasPorNodo.get(n))
+                .thenComparingInt(n -> n.id));
 
         double celdaLat = SEPARACION_SEMAFOROS_M / 111_320.0;
         double celdaLon = celdaLat / Math.max(0.1, Math.cos(Math.toRadians((minLat + maxLat) / 2)));
@@ -159,7 +150,11 @@ public class PieroGGrafoVial {
                 }
             }
             if (cerca) continue;
-            c.semaforo = new EberthMSemaforo(c.id);
+            EberthMSemaforo semaforo = new EberthMSemaforo(c.id);
+            semaforo.setDemanda(demandaH.getOrDefault(c, 0), demandaV.getOrDefault(c, 0));
+            semaforo.setHoraPunta(horaPuntaSemaforos);
+            semaforo.setEscalaTiempo(escalaTiempoSemaforos);
+            c.semaforo = semaforo;
             celdas.computeIfAbsent((cx << 32) ^ (cy & 0xffffffffL), k -> new ArrayList<>()).add(c);
             elegidos.add(c);
         }
@@ -168,11 +163,27 @@ public class PieroGGrafoVial {
         versionSemaforos++;
     }
 
+    /** En hora punta los ciclos bajan a 45 s manteniendo la proporción de los verdes. */
+    public synchronized void setHoraPuntaSemaforos(boolean horaPunta) {
+        if (horaPuntaSemaforos == horaPunta) return;
+        horaPuntaSemaforos = horaPunta;
+        for (PieroGNodo n : semaforosActuales) n.semaforo.setHoraPunta(horaPunta);
+    }
+
+    /** Alarga (o restablece) la duración de todos los ciclos; ver {@link EberthMSemaforo#setEscalaTiempo}. */
+    public synchronized void setEscalaTiempoSemaforos(double escala) {
+        if (escalaTiempoSemaforos == escala) return;
+        escalaTiempoSemaforos = escala;
+        for (PieroGNodo n : semaforosActuales) n.semaforo.setEscalaTiempo(escala);
+    }
+
     private PieroGEdge crearEdge(int id, PieroGNodo a, PieroGNodo b, PieroGVia v) {
         double len = distanciaMetros(a.lon, a.lat, b.lon, b.lat);
         if (len <= 0) len = 0.01;
-        return new PieroGEdge(id, a, b, len,
+        PieroGEdge edge = new PieroGEdge(id, a, b, len,
                 v.highway, v.name, v.maxspeed, v.oneway, v.lanes, v.ref);
+        edge.flujoMaximo = v.flujoMaximo;
+        return edge;
     }
 
     private PieroGNodo nodoEnOLoCrear(double lon, double lat) {

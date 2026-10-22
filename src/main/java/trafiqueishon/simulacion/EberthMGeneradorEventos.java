@@ -22,12 +22,16 @@ public final class EberthMGeneradorEventos {
     public static final double PROB_ACCIDENTE_BAJA = 0.003;
     public static final double PROB_ACCIDENTE_MEDIA = 0.008;
     public static final double PROB_ACCIDENTE_ALTA = 0.02;
-    /** Fracción de la probabilidad de lluvia de la ciudad que se juega cada minuto. */
-    public static final double FACTOR_LLUVIA_POR_MINUTO = 0.05;
+    /** Duración media de un aguacero (15-40 min simulados), para convertir % de lluvia en llegadas/min. */
+    public static final double DURACION_MEDIA_LLUVIA_MIN = 27.5;
+    /** Tope de la fracción de tiempo lloviendo: con 100 % la tasa de llegadas sería infinita. */
+    static final double LLUVIA_MAXIMA = 0.95;
 
     public static final int MAX_TRANCADERAS = 6;
     public static final int MAX_ACCIDENTES = 3;
     public static final int MAX_LLUVIAS = 2;
+    /** Duración de un policía de tránsito, en minutos simulados. */
+    public static final int DURACION_POLICIA_MINUTOS = 10;
 
     private static final double RADIO_LLUVIA_MIN = 500;
     private static final double RADIO_LLUVIA_MAX = 2_000;
@@ -78,8 +82,21 @@ public final class EberthMGeneradorEventos {
         };
     }
 
+    /**
+     * Probabilidad por minuto de que empiece un aguacero, tal que la ciudad esté lloviendo
+     * aproximadamente {@code porcentajeCiudad} % del tiempo (al menos una lluvia activa). Jugar
+     * el porcentaje directamente cada minuto la haría llover casi siempre (35 % por minuto ≈ un
+     * aguacero cada 3 min).
+     *
+     * <p>Con hasta {@link #MAX_LLUVIAS} = 2 lluvias a la vez es un sistema de pérdida de Erlang:
+     * con carga {@code a = λ·D} (D = duración media), la ciudad está seca con probabilidad
+     * {@code 1 / (1 + a + a²/2)}. Despejando para una fracción lluviosa {@code p}:
+     * {@code a = √((1 + p) / (1 − p)) − 1}.</p>
+     */
     public static double probabilidadLluvia(double porcentajeCiudad) {
-        return porcentajeCiudad / 100.0 * FACTOR_LLUVIA_POR_MINUTO;
+        double p = Math.clamp(porcentajeCiudad / 100.0, 0, LLUVIA_MAXIMA);
+        double carga = Math.sqrt((1 + p) / (1 - p)) - 1;
+        return carga / DURACION_MEDIA_LLUVIA_MIN;
     }
 
     /** Eventos generados cuya duración terminó en {@code minuto}; dejan de estar activos. */
@@ -117,6 +134,24 @@ public final class EberthMGeneradorEventos {
             nuevos.add(crear(EberthMTipoEvento.LLUVIA, minuto, 15 + azar.nextInt(26), radio));
         }
         return nuevos;
+    }
+
+    /** {@code true} si ya hay un policía activo en esa intersección. */
+    public boolean hayPoliciaEn(double lon, double lat) {
+        for (Activo a : activos) {
+            EberthMEventoTrafico e = a.evento();
+            if (e.tipo().esPolicia() && e.lon() == lon && e.lat() == lat) return true;
+        }
+        return false;
+    }
+
+    /** Despliega un policía en la intersección dada; caduca a los {@link #DURACION_POLICIA_MINUTOS} min. */
+    public EberthMEventoTrafico crearPolicia(double lon, double lat, int minuto, double rumbo) {
+        EberthMEventoTrafico evento = new EberthMEventoTrafico(
+                EberthMTipoEvento.POLICIA_TRANSITO + " " + (++contador),
+                EberthMTipoEvento.POLICIA_TRANSITO, lon, lat, 0, rumbo);
+        activos.add(new Activo(evento, minuto + DURACION_POLICIA_MINUTOS));
+        return evento;
     }
 
     private int cuantos(EberthMTipoEvento tipo) {

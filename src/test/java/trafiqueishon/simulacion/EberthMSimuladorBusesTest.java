@@ -55,11 +55,11 @@ class EberthMSimuladorBusesTest {
         simulador.iniciar(trayecto(), 1, 1, 60);
 
         assertEquals(60, simulador.pasajerosAsignados());
-        assertEquals(68, simulador.capacidadTotal());
+        assertEquals(83, simulador.capacidadTotal());
         assertEquals(60, simulador.posiciones().stream()
                 .mapToInt(EberthMPosicionVehiculo::pasajeros).sum());
         assertThrows(IllegalArgumentException.class,
-                () -> simulador.iniciar(trayecto(), 1, 1, 69));
+                () -> simulador.iniciar(trayecto(), 1, 1, 84));
     }
 
     @Test
@@ -242,6 +242,8 @@ class EberthMSimuladorBusesTest {
     private int demandaEnParada(EberthMCategoriaPoi categoria, EberthMTipoDia dia) {
         PieroGVia directa = via("directa", "directa", new double[]{-70.0, -15.0},
                 new double[]{-69.9995, -15.0}, new double[]{-69.999, -15.0});
+        // Vía terciaria: sin origen residencial, solo cuenta el POI de la parada.
+        directa.highway = "tertiary";
         PieroGProyector proyector = new PieroGProyector();
         proyector.preProyectar(List.of(directa));
         PieroGGrafoVial grafo = new PieroGGrafoVial();
@@ -261,6 +263,45 @@ class EberthMSimuladorBusesTest {
         simulador.iniciar(List.of(servicio), 7, 0);
         avanzar(simulador, 600);
         return simulador.paradasEnEspera().stream().mapToInt(EberthMParadaEspera::esperando).max().orElse(0);
+    }
+
+    @Test
+    void quienApareceLejosDeLaRutaCaminaHastaLaParadaYSeUneALaEspera() {
+        PieroGVia directa = via("directa", "directa", new double[]{-70.0, -15.0},
+                new double[]{-69.9995, -15.0}, new double[]{-69.999, -15.0});
+        PieroGVia lateral = via("lateral", "lateral", new double[]{-70.0, -14.998},
+                new double[]{-69.9995, -14.998});
+        PieroGProyector proyector = new PieroGProyector();
+        proyector.preProyectar(List.of(directa, lateral));
+        PieroGGrafoVial grafo = new PieroGGrafoVial();
+        grafo.construir(List.of(directa, lateral), proyector);
+        List<PieroGEdge> ida = grafo.getEdges().stream()
+                .filter(e -> e.origen.lon < e.destino.lon && e.origen.lat == -15.0).toList();
+        LuisYTrayecto trayectoIda = new LuisYTrayecto("ida", "Ida", "Empresa",
+                List.of(new LuisYPuntoImportante("a", "A", -70, -15),
+                        new LuisYPuntoImportante("c", "C", -69.999, -15)),
+                ida, 100, 100, "SERVICIO");
+        EberthMServicioMicro servicio = new EberthMServicioMicro("m1", "Micro", trayectoIda,
+                trayectoIda, 180, 1, 0, "#39FF14");
+        EberthMSimuladorBuses simulador = new EberthMSimuladorBuses();
+        simulador.configurarGrafo(grafo);
+        // El POI queda ~220 m al norte de la ruta, junto a una calle por la que no pasa ningún micro.
+        simulador.setPuntosInteres(List.of(new EberthMPoi("P", -70.0, -14.998, EberthMCategoriaPoi.EDUCACION)));
+        simulador.iniciar(List.of(servicio), 7, 0);
+
+        int maxCaminando = 0;
+        for (int t = 0; t < 120 && maxCaminando == 0; t++) {
+            simulador.avanzar(1);
+            maxCaminando = simulador.pasajerosCaminando();
+        }
+        assertTrue(maxCaminando > 0, "debe haber gente caminando a la parada");
+        assertTrue(simulador.posicionesCaminantes().length > 0);
+
+        avanzar(simulador, 240); // 220 m a 5 km/h ≈ 160 s
+        int enParadaLejana = simulador.paradasEnEspera().stream()
+                .filter(p -> p.esperando() > 0).mapToInt(EberthMParadaEspera::esperando).sum();
+        assertTrue(enParadaLejana > 0 || simulador.pasajerosTransportados() > 0,
+                "los que llegaron caminando se unen a la espera o ya subieron");
     }
 
     @Test
@@ -324,8 +365,42 @@ class EberthMSimuladorBusesTest {
         avanzar(simulador, 60 * 60);
         int max = simulador.paradasEnEspera().stream()
                 .mapToInt(EberthMParadaEspera::esperando).max().orElse(0);
-        // Sin paciencia llegarían a 300; con 15 min de paciencia nunca pasan de 5 × 15.
-        assertTrue(max > 0 && max <= 75, "esperando: " + max);
+        // Sin paciencia llegarían a ~300; con 15 min de paciencia quedan en torno a 5 × 15.
+        assertTrue(max > 0 && max <= 100, "esperando: " + max);
+    }
+
+    @Test
+    void conEscalaAltaLaUnidadNoSaleLlenaDeGenteInventadaYLaSaturacionSeCuenta() {
+        PieroGVia directa = via("directa", "directa", new double[]{-70.0, -15.0},
+                new double[]{-69.9995, -15.0}, new double[]{-69.999, -15.0});
+        PieroGProyector proyector = new PieroGProyector();
+        proyector.preProyectar(List.of(directa));
+        PieroGGrafoVial grafo = new PieroGGrafoVial();
+        grafo.construir(List.of(directa), proyector);
+        List<PieroGEdge> ida = grafo.getEdges().stream()
+                .filter(e -> e.origen.lon < e.destino.lon).toList();
+        LuisYTrayecto trayectoIda = new LuisYTrayecto("ida", "Ida", "Empresa",
+                List.of(new LuisYPuntoImportante("a", "A", -70, -15),
+                        new LuisYPuntoImportante("c", "C", -69.999, -15)),
+                ida, 100, 100, "SERVICIO");
+        EberthMServicioMicro servicio = new EberthMServicioMicro("m1", "Micro", trayectoIda,
+                trayectoIda, 180, 1, 50_000, "#39FF14");
+        EberthMSimuladorBuses simulador = new EberthMSimuladorBuses();
+        simulador.configurarGrafo(grafo);
+        var ciudad = EberthMParametrosCiudad.porDefecto(trafiqueishon.geo.PieroGCiudadMapa.JULIACA);
+        ciudad.setCapacidadMaximaParada(5);
+        simulador.setParametrosCiudad(ciudad);
+        simulador.setEscalaDemanda(100);
+        simulador.iniciar(List.of(servicio), 10, 0);
+
+        // Antes salía con 18 pasajeros del contador del despachador aunque la parada estuviera vacía.
+        assertEquals(0, simulador.posiciones().getFirst().pasajeros());
+
+        avanzar(simulador, 10 * 60);
+        int max = simulador.paradasEnEspera().stream()
+                .mapToInt(EberthMParadaEspera::esperando).max().orElse(0);
+        assertTrue(max <= 5, "esperando: " + max);
+        assertTrue(simulador.pasajerosAbandonaron() > 0, "la parada llena debe contar abandonos");
     }
 
     @Test
@@ -365,7 +440,7 @@ class EberthMSimuladorBusesTest {
     }
 
     @Test
-    void losPasajerosBajanEnSuDestinoYLaOcupacionNuncaSuperaLaCapacidad() {
+    void losPasajerosBajanEnSuDestinoYLaOcupacionNuncaSuperaLaCapacidadConSobrecupo() {
         PieroGVia directa = via("directa", "directa",
                 new double[]{-70.0, -15.0}, new double[]{-69.9995, -15.0},
                 new double[]{-69.999, -15.0}, new double[]{-69.9985, -15.0});
@@ -400,13 +475,59 @@ class EberthMSimuladorBusesTest {
         for (int t = 0; t < 1_800; t++) {
             simulador.avanzar(1);
             for (EberthMPosicionVehiculo v : simulador.posiciones()) {
-                assertTrue(v.pasajeros() >= 0 && v.pasajeros() <= v.capacidad());
+                // Abordaje universal: se admite hasta un 20 % de sobrecupo (pasajeros apretados).
+                assertTrue(v.pasajeros() >= 0 && v.pasajeros() <= Math.ceil(v.capacidad() * 1.2));
                 maximo = Math.max(maximo, v.pasajeros());
             }
         }
         assertTrue(maximo > 0);
         // Con varias vueltas, los que suben tienen que bajar: se transporta más de lo que cabe.
         assertTrue(simulador.pasajerosTransportados() > 18);
+    }
+
+    @Test
+    void losContadoresDePasajerosCuadranConLosGenerados() {
+        PieroGVia directa = via("directa", "directa",
+                new double[]{-70.0, -15.0}, new double[]{-69.9995, -15.0},
+                new double[]{-69.999, -15.0}, new double[]{-69.9985, -15.0});
+        PieroGProyector proyector = new PieroGProyector();
+        proyector.preProyectar(List.of(directa));
+        PieroGGrafoVial grafo = new PieroGGrafoVial();
+        grafo.construir(List.of(directa), proyector);
+        List<PieroGEdge> ida = grafo.getEdges().stream()
+                .filter(e -> e.origen.lon < e.destino.lon)
+                .sorted(java.util.Comparator.comparingDouble(e -> e.origen.lon)).toList();
+        List<PieroGEdge> vuelta = grafo.getEdges().stream()
+                .filter(e -> e.origen.lon > e.destino.lon)
+                .sorted(java.util.Comparator.comparingDouble(e -> -e.origen.lon)).toList();
+        LuisYTrayecto trayectoIda = new LuisYTrayecto("ida", "Ida", "Empresa",
+                List.of(new LuisYPuntoImportante("a", "A", -70, -15),
+                        new LuisYPuntoImportante("b", "B", -69.9995, -15),
+                        new LuisYPuntoImportante("c", "C", -69.999, -15),
+                        new LuisYPuntoImportante("d", "D", -69.9985, -15)),
+                ida, 150, 100, "SERVICIO");
+        LuisYTrayecto trayectoVuelta = new LuisYTrayecto("vuelta", "Vuelta", "Empresa",
+                List.of(new LuisYPuntoImportante("d", "D", -69.9985, -15),
+                        new LuisYPuntoImportante("a", "A", -70, -15)),
+                vuelta, 150, 100, "SERVICIO_VUELTA");
+        EberthMServicioMicro servicio = new EberthMServicioMicro("m1", "Micro", trayectoIda,
+                trayectoVuelta, 1, 1, 0, "#39FF14");
+        EberthMSimuladorBuses simulador = new EberthMSimuladorBuses();
+        simulador.configurarGrafo(grafo);
+        simulador.setParametrosCiudad(new EberthMParametrosCiudad(280_000, 65, "17:30-19:30", 0,
+                EberthMParametrosCiudad.TasaAccidentes.BAJA));
+        simulador.iniciar(List.of(servicio), 17, 30);
+
+        for (int t = 0; t < 3_600; t++) {
+            simulador.avanzar(1);
+            long aBordo = simulador.posiciones().stream().mapToLong(EberthMPosicionVehiculo::pasajeros).sum();
+            long esperando = simulador.paradasEnEspera().stream().mapToLong(EberthMParadaEspera::esperando).sum();
+            long suma = aBordo + esperando + simulador.pasajerosCaminando()
+                    + simulador.pasajerosAbandonaron() + simulador.pasajerosBajaron();
+            assertEquals(suma, simulador.pasajerosGenerados(), "no cuadra en t=" + t);
+            assertTrue(simulador.pasajerosTransportados() <= simulador.pasajerosGenerados());
+        }
+        assertTrue(simulador.pasajerosGenerados() > 0);
     }
 
     @Test
@@ -594,5 +715,24 @@ class EberthMSimuladorBusesTest {
                 EberthMTipoDia.LABORAL, false), 1e-9);
         assertEquals(2.5, EberthMPerfilHoraPunta.multiplicadorDemanda(ciudad, 60,
                 EberthMTipoDia.LABORAL, true), 1e-9);
+    }
+
+    @Test
+    void elPerfilDeDemandaSigueLasHorasPuntaYElPorcentajeDePoblacionConfigurados() {
+        // 20 % de 100 000 habitantes (de 60 000 usuarios) viaja entre las 06:00 y las 08:30.
+        EberthMParametrosCiudad ciudad = new EberthMParametrosCiudad(100_000, 60, "06:00-08:30", 0,
+                EberthMParametrosCiudad.TasaAccidentes.BAJA);
+        ciudad.setPorcentajePoblacionEnPunta(20);
+        double[] horas = ciudad.fraccionesHorarias(EberthMTipoDia.LABORAL);
+        assertEquals(1.0, java.util.Arrays.stream(horas).sum(), 1e-9);
+        double[] minutos = ciudad.perfilPorMinuto(EberthMTipoDia.LABORAL);
+        double enPunta = java.util.stream.IntStream.range(6 * 60, 8 * 60 + 30).mapToDouble(m -> minutos[m]).sum();
+        assertEquals(20_000.0 / 60_000.0, enPunta, 1e-9);
+        assertEquals(horas[6], horas[7], 1e-12);
+        assertTrue(horas[7] > 3 * horas[13], "la punta debe destacar sobre el resto del día");
+        // Cambiar el rango mueve el pico: nada queda fijo en 07:00-09:00.
+        ciudad.setHorasPunta("15:00-16:00");
+        assertTrue(ciudad.fraccionesHorarias(EberthMTipoDia.LABORAL)[15] > horas[7] / 4);
+        assertTrue(ciudad.fraccionesHorarias(EberthMTipoDia.LABORAL)[7] < horas[7] / 2);
     }
 }

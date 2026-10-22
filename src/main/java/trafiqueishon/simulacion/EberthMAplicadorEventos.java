@@ -15,6 +15,7 @@ import java.util.List;
  *   <li>Trancadera / vendedores: velocidad x0.1 / x0.5 en el tramo del clic, sin cerrarlo.</li>
  *   <li>Vía cerrada / accidente: tramo bloqueado (velocidad 0); los pathfinders desvían.</li>
  *   <li>Semáforo roto: el semáforo del nodo queda en rojo permanente.</li>
+ *   <li>Policía de tránsito: agiliza el cruce; el semáforo del nodo reduce su rojo a la mitad.</li>
  *   <li>Manifestación: el nodo y todos sus tramos adyacentes quedan bloqueados.</li>
  * </ul>
  * Debe ejecutarse en el hilo del motor de simulación para no modificar el grafo
@@ -48,6 +49,7 @@ public final class EberthMAplicadorEventos {
         }
         for (PieroGNodo nodo : grafo.getNodos()) {
             if (nodo.semaforoRoto) nodo.semaforoRoto = false;
+            if (nodo.policiaTransito) nodo.policiaTransito = false;
         }
         List<PieroGEdge> cerradas = new ArrayList<>();
         List<PieroGEdge> trancaderas = new ArrayList<>();
@@ -58,6 +60,10 @@ public final class EberthMAplicadorEventos {
             } else if (tipo.afectaNodo()) {
                 PieroGNodo nodo = nodoCercano(grafo, evento);
                 if (nodo != null) nodo.semaforoRoto = true;
+            } else if (tipo.esPolicia()) {
+                PieroGNodo nodo = nodoCercano(grafo, evento);
+                if (nodo == null) continue;
+                nodo.policiaTransito = true;
             } else if (tipo.bloqueaNodo()) {
                 PieroGNodo nodo = nodoCercano(grafo, evento);
                 if (nodo == null) continue;

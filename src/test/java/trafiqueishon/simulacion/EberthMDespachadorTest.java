@@ -32,6 +32,25 @@ class EberthMDespachadorTest {
     }
 
     @Test
+    void conLaViaSaturadaLaUnidadEsperaHastaElTopeYLuegoSale() {
+        EberthMDespachador despachador = new EberthMDespachador(servicio(10, 4, 100));
+
+        assertTrue(despachador.siguienteSalida(0, MINUTO, false, desdeFinal -> false).isEmpty());
+        assertTrue(despachador.siguienteSalida(300, MINUTO, false, desdeFinal -> false).isEmpty());
+        assertTrue(despachador.siguienteSalida(300, MINUTO, false, desdeFinal -> true).isPresent());
+        // Al liberarse la vía el reloj de la siguiente salida parte de la salida real (300 s), no de 0.
+        assertEquals(300, despachador.proximoDespacho(), 0.0001);
+    }
+
+    @Test
+    void trasLaEsperaMaximaSaleAunqueLaViaSigaSaturada() {
+        EberthMDespachador despachador = new EberthMDespachador(servicio(10, 4, 100));
+        assertTrue(despachador.siguienteSalida(
+                EberthMDespachador.ESPERA_MAXIMA_SATURACION_SEGUNDOS, MINUTO, false,
+                desdeFinal -> false).isPresent());
+    }
+
+    @Test
     void respetaLaFrecuenciaEntreSalidasYAlternaTerminal() {
         EberthMDespachador despachador = new EberthMDespachador(servicio(10, 4, 100));
         despachador.siguienteSalida(0, MINUTO);

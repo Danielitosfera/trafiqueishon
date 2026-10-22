@@ -13,6 +13,9 @@ public class PieroGVia {
     public String surface;
     public boolean bridge;
     public String ref;
+    /** Micros por hora que admite la vía (separación mínima de 60 s entre unidades, criterio JICA). */
+    public static final int FLUJO_MAXIMO_POR_DEFECTO = 60;
+    public int flujoMaximo = FLUJO_MAXIMO_POR_DEFECTO;
 
     public float[] projX;
     public float[] projY;

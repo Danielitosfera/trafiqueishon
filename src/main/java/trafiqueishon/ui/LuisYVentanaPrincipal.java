@@ -10,6 +10,10 @@ import javafx.geometry.Insets;
 import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
+import javafx.scene.chart.BarChart;
+import javafx.scene.chart.CategoryAxis;
+import javafx.scene.chart.NumberAxis;
+import javafx.scene.chart.XYChart;
 import javafx.scene.control.*;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
@@ -122,6 +126,8 @@ public class LuisYVentanaPrincipal {
     private final TextField campoPoblacion = new TextField();
     private final Spinner<Double> spinnerTransporte = new Spinner<>(0.0, 100.0, 60.0, 1.0);
     private final TextField campoHorasPunta = new TextField();
+    private final Spinner<Double> spinnerPunta = new Spinner<>(0.0, 100.0,
+            EberthMParametrosCiudad.PORCENTAJE_POBLACION_PUNTA_POR_DEFECTO, 1.0);
     private final Spinner<Double> spinnerLluvia = new Spinner<>(0.0, 100.0, 20.0, 1.0);
     private final ComboBox<EberthMParametrosCiudad.TasaAccidentes> selectorAccidentes = new ComboBox<>();
     private final Spinner<Double> spinnerEstudiantes = new Spinner<>(0.0, 100.0, 25.0, 1.0);
@@ -136,6 +142,8 @@ public class LuisYVentanaPrincipal {
     private final CheckBox chkEventosOrganicos =
             new CheckBox("Activar Eventos Orgánicos (Según Parámetros de Ciudad)");
 
+    private final CheckBox chkPoliciasDinamicos = new CheckBox("Policías Dinámicos");
+
     // ===== Controles: simulación y eventos =====
     private final ListView<EberthMEventoTrafico> listaEventos = new ListView<>();
     private final Label lblEstado = new Label("Cargando red vial...");
@@ -146,9 +154,12 @@ public class LuisYVentanaPrincipal {
     private final Label lblDemandaActual = new Label("Demanda: --");
     private final Label lblHoraSimulada = new Label("Hora simulada: --:--");
     private final LuisYPanelEstadisticas estadisticasLateral = new LuisYPanelEstadisticas(null);
+    private final LuisYLeyendaFlotante leyendaFlotante = new LuisYLeyendaFlotante();
     private final LuisYPanelEstadisticas estadisticasFlotante =
             new LuisYPanelEstadisticas(this::ocultarEstadisticasFlotantes);
-    private final ToggleButton btnEstadisticas = new ToggleButton("📊");
+    private final ToggleButton btnEstadisticas = new ToggleButton("📊 Estadísticas sobre el mapa");
+    private final Button btnSoloMapa = new Button("Solo mapa (Tab)");
+    private Button btnPlay;
     /** El usuario cerró el cuadro flotante; se recuerda entre sesiones. */
     private boolean estadisticasOcultasPorUsuario = PREFERENCIAS.getBoolean(PREFERENCIA_ESTADISTICAS_OCULTAS, false);
     private final ProgressIndicator progreso = new ProgressIndicator();
@@ -201,6 +212,11 @@ public class LuisYVentanaPrincipal {
     private boolean colocandoPunto;
     private boolean colocandoEvento;
     private TitledPane panelEventos;
+    /** Demanda del día generada sin rutas; base de la generación de oferta. */
+    private EberthMDemandaCiudad demandaCiudad;
+    private final VBox panelResultadosDemanda = new VBox(8);
+    private final Label lblHoraDemanda = new Label();
+    private final Label lblCobertura = new Label();
     /** Tipos de punto que los pasajeros pueden tener como destino (no paradas ni terminales). */
     private static final Set<LuisYPuntoImportante.TipoPunto> ES_POI = java.util.EnumSet.of(
             LuisYPuntoImportante.TipoPunto.POI, LuisYPuntoImportante.TipoPunto.EDUCACION,
@@ -265,7 +281,9 @@ public class LuisYVentanaPrincipal {
         StackPane.setMargin(panelParadas, new Insets(12));
         StackPane.setAlignment(estadisticasFlotante, Pos.TOP_LEFT);
         StackPane.setMargin(estadisticasFlotante, new Insets(12));
-        capaCentral.getChildren().addAll(vistaCroquis, panelParadas, estadisticasFlotante);
+        StackPane.setAlignment(leyendaFlotante, Pos.BOTTOM_RIGHT);
+        StackPane.setMargin(leyendaFlotante, new Insets(12));
+        capaCentral.getChildren().addAll(vistaCroquis, panelParadas, estadisticasFlotante, leyendaFlotante);
         actualizarVisibilidadEstadisticas();
         root.setCenter(capaCentral);
 
@@ -333,10 +351,14 @@ public class LuisYVentanaPrincipal {
             @Override public String toString(Integer n) { return n == null ? "" : "x" + n; }
             @Override public Integer fromString(String s) { return s == null || s.length() < 2 ? 1 : Integer.valueOf(s.substring(1)); }
         });
-        escalaDemanda.getSelectionModel().select(Integer.valueOf(1));
-        escalaDemanda.valueProperty().addListener((o, a, b) ->
-                actualizarDemandaActual(motor.instantanea().haySimulacion()
-                        ? motor.instantanea().horaMinutos() : horaInicio.getValue() * 60 + minutoInicio.getValue()));
+        // Cada pasajero simulado representa 10 habitantes: ×10 inyecta la demanda real de la ciudad.
+        escalaDemanda.getSelectionModel().select(Integer.valueOf((int) EberthMParametrosCiudad.ESCALA_POBLACION_SIMULADA));
+        escalaDemanda.valueProperty().addListener((o, a, b) -> {
+            // La escala rige también en una simulación en marcha.
+            if (b != null) motor.ejecutar(s -> s.setEscalaDemanda(b));
+            actualizarDemandaActual(motor.instantanea().haySimulacion()
+                        ? motor.instantanea().horaMinutos() : horaInicio.getValue() * 60 + minutoInicio.getValue());
+        });
         velocidadSimulacion.getItems().setAll(0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0);
         velocidadSimulacion.setPrefWidth(95);
         velocidadSimulacion.getSelectionModel().select(Double.valueOf(1.0));
@@ -416,17 +438,18 @@ public class LuisYVentanaPrincipal {
         selectorCiudad.setTooltip(new Tooltip("Ciudad: recarga calles y puntos de mapas/<ciudad>/"));
         HBox grupoCiudad = grupo(new Label("Ciudad"), selectorCiudad);
 
-        Button play = crearBotonIcono("▶", "Iniciar / continuar (Espacio)",
-                this::iniciarOReanudarSimulacion);
-        Button pause = crearBotonIcono("⏸", "Pausar", this::pausarSimulacion);
+        // Play y pausa comparten botón: el icono refleja el estado (ver actualizarIndicadoresSimulacion).
+        btnPlay = crearBotonIcono("▶", "Iniciar / pausar (Espacio)", () -> {
+            if (motor.instantanea().ejecutando()) pausarSimulacion();
+            else iniciarOReanudarSimulacion();
+        });
         Button stop = crearBotonIcono("⏹", "Detener y limpiar", this::detenerSimulacion);
         Button reset = crearBotonIcono("↺", "Reiniciar simulación", () ->
                 motor.ejecutar(EberthMSimuladorBuses::limpiar)
                         .whenComplete((v, e) -> Platform.runLater(this::iniciarSimulacion)));
-        HBox grupoSimulacion = grupo(play, pause, stop, reset);
+        HBox grupoSimulacion = grupo(btnPlay, stop, reset);
         HBox grupoVelocidad = grupo(new Label("Velocidad"), velocidadSimulacion);
 
-        Button btnSoloMapa = new Button("Solo mapa");
         btnSoloMapa.setOnAction(e -> alternarPanelLateral());
         btnEstadisticas.setTooltip(new Tooltip("Mostrar u ocultar el cuadro de estadísticas sobre el mapa"));
         btnEstadisticas.setSelected(!estadisticasOcultasPorUsuario);
@@ -435,15 +458,11 @@ public class LuisYVentanaPrincipal {
             PREFERENCIAS.putBoolean(PREFERENCIA_ESTADISTICAS_OCULTAS, estadisticasOcultasPorUsuario);
             actualizarVisibilidadEstadisticas();
         });
-        HBox grupoVista = grupo(btnSoloMapa, btnEstadisticas);
-
-        Button zoomOut = crearBotonIcono("−", "Alejar", mapa::zoomOut);
-        Button zoomIn = crearBotonIcono("+", "Acercar", mapa::zoomIn);
-        HBox grupoZoom = grupo(zoomOut, zoomIn);
 
         Region espacio = new Region();
         HBox.setHgrow(espacio, Priority.ALWAYS);
 
+        // Solo lo esencial; vista y zoom (rueda del ratón) viven en el panel lateral y los menús.
         controles.getChildren().addAll(
                 titulo,
                 new Separator(Orientation.VERTICAL),
@@ -451,13 +470,9 @@ public class LuisYVentanaPrincipal {
                 new Separator(Orientation.VERTICAL),
                 grupoSimulacion,
                 grupoVelocidad,
-                new Separator(Orientation.VERTICAL),
-                grupoVista,
                 espacio,
                 lblDemandaActual,
-                lblRelojStatus,
-                new Separator(Orientation.VERTICAL),
-                grupoZoom);
+                lblRelojStatus);
         lblRelojStatus.getStyleClass().add("reloj");
         lblDemandaActual.getStyleClass().add("reloj");
 
@@ -507,6 +522,14 @@ public class LuisYVentanaPrincipal {
         oscuro.setOnAction(e -> aplicarTema(false));
         claro.setOnAction(e -> aplicarTema(true));
         vistas.getItems().addAll(
+                item("Mostrar / ocultar panel lateral (Tab)", this::alternarPanelLateral),
+                item("Mostrar / ocultar estadísticas sobre el mapa", () -> {
+                    estadisticasOcultasPorUsuario = !estadisticasOcultasPorUsuario;
+                    btnEstadisticas.setSelected(!estadisticasOcultasPorUsuario);
+                    PREFERENCIAS.putBoolean(PREFERENCIA_ESTADISTICAS_OCULTAS, estadisticasOcultasPorUsuario);
+                    actualizarVisibilidadEstadisticas();
+                }),
+                new SeparatorMenuItem(),
                 item("Modo presentación (F11)", this::alternarPresentacion),
                 new SeparatorMenuItem(),
                 oscuro, claro);
@@ -555,15 +578,17 @@ public class LuisYVentanaPrincipal {
         TitledPane eventosPane = panelEventos;
         TitledPane exportar = seccion("⬇  Exportar", crearSeccionExportar());
         acordeon.getPanes().addAll(mapas, rutas, pois, ciudad, simulacion, eventosPane, exportar);
+        pois.setExpanded(false);
         acordeon.setExpandedPane(rutas);
 
         panelLateral = new ScrollPane(acordeon);
         panelLateral.setFitToWidth(true);
         panelLateral.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
         panelLateral.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
-        panelLateral.setPrefWidth(420);
-        panelLateral.setMinWidth(350);
-        panelLateral.setMaxWidth(500);
+        // El panel sigue al tamaño de la ventana (≈ 28 %); el mapa del centro ocupa el resto.
+        panelLateral.prefWidthProperty().bind(root.widthProperty().multiply(0.28));
+        panelLateral.setMinWidth(320);
+        panelLateral.setMaxWidth(560);
         panelLateral.getStyleClass().add("panel-lateral");
         return panelLateral;
     }
@@ -672,9 +697,14 @@ public class LuisYVentanaPrincipal {
                 boton("Limpiar trayectos", this::limpiarTrayectos));
     }
 
+    private static final double ZOOM_PUNTO_SELECCIONADO = 48;
+
     private VBox crearSeccionPuntos() {
         listaPuntos.setPlaceholder(new Label("Sin ubicaciones cargadas."));
         listaPuntos.setPrefHeight(190);
+        listaPuntos.getSelectionModel().selectedItemProperty().addListener((o, antes, punto) -> {
+            if (punto != null) mapa.centrarEn(punto.lon(), punto.lat(), ZOOM_PUNTO_SELECCIONADO);
+        });
         listaPuntos.setCellFactory(list -> new ListCell<>() {
             @Override
             protected void updateItem(LuisYPuntoImportante punto, boolean vacio) {
@@ -689,7 +719,10 @@ public class LuisYVentanaPrincipal {
                 marca.setStyle("-fx-background-color: "
                         + LuisYPaletaColores.colorCategoria(punto.tipo()) + ";");
                 setGraphic(marca);
-                setText(punto.nombre() + "  ·  " + punto.tipo());
+                var categoria = EberthMCategoriaPoi.desde(punto.tipo());
+                String popular = categoria == EberthMCategoriaPoi.OTRO ? ""
+                        : "   ⭐ " + categoria.popularidad() + " - ~" + categoria.personasPromedio() + " pax/h";
+                setText(punto.nombre() + "  ·  " + punto.tipo() + popular);
             }
         });
         return new VBox(10,
@@ -718,6 +751,7 @@ public class LuisYVentanaPrincipal {
         campoHorasPuntaFinSemana.setPromptText("11:00-14:00, 18:00-21:00");
         spinnerTransporte.setEditable(true);
         spinnerLluvia.setEditable(true);
+        spinnerPunta.setEditable(true);
         spinnerEstudiantes.setEditable(true);
         spinnerTrabajadores.setEditable(true);
         spinnerJubilados.setEditable(true);
@@ -739,10 +773,10 @@ public class LuisYVentanaPrincipal {
         String[] nombres = {"Población total", "Uso de transporte público (%)", "Horas punta",
                 "Probabilidad de lluvia (%)", "Tasa de accidentes", "Estudiantes (%)",
                 "Trabajadores (%)", "Jubilados (%)", "Capacidad máxima por parada",
-                "Horas punta sáb/dom/feriado"};
+                "Horas punta sáb/dom/feriado", "Población que viaja en hora punta (%)"};
         Node[] controles = {campoPoblacion, spinnerTransporte, campoHorasPunta, spinnerLluvia,
                 selectorAccidentes, spinnerEstudiantes, spinnerTrabajadores, spinnerJubilados,
-                spinnerCapacidadParada, campoHorasPuntaFinSemana};
+                spinnerCapacidadParada, campoHorasPuntaFinSemana, spinnerPunta};
         for (int i = 0; i < nombres.length; i++) {
             Label etiqueta = new Label(nombres[i]);
             etiqueta.setWrapText(true);
@@ -758,11 +792,44 @@ public class LuisYVentanaPrincipal {
                 new Separator(),
                 rejillaBotones(
                         boton("Aplicar", this::aplicarParametrosCiudad),
-                        boton("Valores por defecto", this::restablecerParametrosCiudad)),
+                        boton("Valores por defecto", this::restablecerParametrosCiudad),
+                        boton("Previsualizar Demanda", this::previsualizarDemanda)),
                 ayuda("Al cambiar de ciudad se cargan valores realistas de Juliaca, Puno o Lima. "
                         + "Horas punta: rangos HH:mm-HH:mm separados por comas. Estudiantes + "
                         + "trabajadores + jubilados debe sumar 100 %. Ninguna parada acumula más "
                         + "pasajeros que su capacidad máxima: el resto se rinde y camina a otra."));
+    }
+
+    /** Gráfico de barras con los pasajeros proyectados por hora para la ciudad actual. */
+    private void previsualizarDemanda() {
+        if (parametrosCiudad == null) return;
+        double usuarios = parametrosCiudad.usuariosTransporteDiarios();
+        EberthMTipoDia dia = selectorTipoDia.getValue() == null
+                ? EberthMTipoDia.LABORAL : selectorTipoDia.getValue();
+        double[] fracciones = parametrosCiudad.fraccionesHorarias(dia);
+        CategoryAxis ejeHora = new CategoryAxis();
+        ejeHora.setLabel("Hora del día");
+        NumberAxis ejePasajeros = new NumberAxis();
+        ejePasajeros.setLabel("Pasajeros por hora");
+        BarChart<String, Number> grafico = new BarChart<>(ejeHora, ejePasajeros);
+        grafico.setLegendVisible(false);
+        grafico.setAnimated(false);
+        XYChart.Series<String, Number> serie = new XYChart.Series<>();
+        for (int h = 0; h < 24; h++) {
+            serie.getData().add(new XYChart.Data<>(String.format("%02d", h),
+                    Math.round(usuarios * dia.demandaGlobal() * fracciones[h])));
+        }
+        grafico.getData().add(serie);
+        grafico.setTitle(String.format(java.util.Locale.ROOT, "Demanda proyectada · %,.0f viajes/día (horas punta: %s)",
+                usuarios * dia.demandaGlobal(),
+                dia.esLaboral() ? parametrosCiudad.getHorasPunta() : parametrosCiudad.getHorasPuntaFinSemana()));
+        Alert dialogo = new Alert(Alert.AlertType.INFORMATION);
+        dialogo.getDialogPane().setContent(grafico);
+        dialogo.getDialogPane().setPrefSize(760, 460);
+        estilizarDialogo(dialogo);
+        dialogo.setTitle("Previsualizar demanda");
+        dialogo.setHeaderText(null);
+        dialogo.show();
     }
 
     private Map<String, EberthMParametrosCiudad> cargarConfigCiudades() {
@@ -818,6 +885,7 @@ public class LuisYVentanaPrincipal {
         campoHorasPunta.setText(p.getHorasPunta());
         campoHorasPuntaFinSemana.setText(p.getHorasPuntaFinSemana());
         spinnerLluvia.getValueFactory().setValue(p.getProbabilidadLluvia());
+        spinnerPunta.getValueFactory().setValue(p.getPorcentajePoblacionEnPunta());
         selectorAccidentes.setValue(p.getTasaAccidentes());
         spinnerEstudiantes.getValueFactory().setValue(p.getPorcentajeEstudiantes());
         spinnerTrabajadores.getValueFactory().setValue(p.getPorcentajeTrabajadores());
@@ -825,26 +893,34 @@ public class LuisYVentanaPrincipal {
         spinnerCapacidadParada.getValueFactory().setValue(p.getCapacidadMaximaParada());
     }
 
+    /** Lee los campos del panel de configuración en una copia de los parámetros vigentes. */
+    private EberthMParametrosCiudad leerParametrosDelPanel() {
+        spinnerTransporte.commitValue(); // confirma el texto escrito a mano
+        spinnerLluvia.commitValue();
+        spinnerPunta.commitValue();
+        spinnerEstudiantes.commitValue();
+        spinnerTrabajadores.commitValue();
+        spinnerJubilados.commitValue();
+        spinnerCapacidadParada.commitValue();
+        EberthMParametrosCiudad nuevos = parametrosCiudad.copia();
+        nuevos.setPoblacionTotal(Long.parseLong(campoPoblacion.getText().trim().replace(".", "")
+                .replace(",", "").replace(" ", "")));
+        nuevos.setPorcentajeTransportePublico(spinnerTransporte.getValue());
+        nuevos.setHorasPunta(campoHorasPunta.getText());
+        nuevos.setHorasPuntaFinSemana(campoHorasPuntaFinSemana.getText());
+        nuevos.setProbabilidadLluvia(spinnerLluvia.getValue());
+        nuevos.setPorcentajePoblacionEnPunta(spinnerPunta.getValue());
+        nuevos.setTasaAccidentes(selectorAccidentes.getValue());
+        nuevos.setDemografia(spinnerEstudiantes.getValue(), spinnerTrabajadores.getValue(),
+                spinnerJubilados.getValue());
+        nuevos.setCapacidadMaximaParada(spinnerCapacidadParada.getValue());
+        return nuevos;
+    }
+
     private void aplicarParametrosCiudad() {
         if (ciudadActual == null) return;
         try {
-            spinnerTransporte.commitValue(); // confirma el texto escrito a mano
-            spinnerLluvia.commitValue();
-            spinnerEstudiantes.commitValue();
-            spinnerTrabajadores.commitValue();
-            spinnerJubilados.commitValue();
-            spinnerCapacidadParada.commitValue();
-            EberthMParametrosCiudad nuevos = parametrosCiudad.copia();
-            nuevos.setPoblacionTotal(Long.parseLong(campoPoblacion.getText().trim().replace(".", "")
-                    .replace(",", "").replace(" ", "")));
-            nuevos.setPorcentajeTransportePublico(spinnerTransporte.getValue());
-            nuevos.setHorasPunta(campoHorasPunta.getText());
-            nuevos.setHorasPuntaFinSemana(campoHorasPuntaFinSemana.getText());
-            nuevos.setProbabilidadLluvia(spinnerLluvia.getValue());
-            nuevos.setTasaAccidentes(selectorAccidentes.getValue());
-            nuevos.setDemografia(spinnerEstudiantes.getValue(), spinnerTrabajadores.getValue(),
-                    spinnerJubilados.getValue());
-            nuevos.setCapacidadMaximaParada(spinnerCapacidadParada.getValue());
+            EberthMParametrosCiudad nuevos = leerParametrosDelPanel();
             parametrosCiudad = nuevos;
             parametrosPorCiudad.put(ciudadActual.id(), nuevos);
             enviarParametrosAlMotor();
@@ -910,6 +986,11 @@ public class LuisYVentanaPrincipal {
         HBox hora = new HBox(8, new Label("Hora"), horaInicio, new Label("Min"), minutoInicio);
         hora.setAlignment(Pos.CENTER_LEFT);
         return new VBox(10,
+                subtitulo("Demanda de la ciudad"),
+                crearPanelDemanda(),
+                ayuda("La demanda se proyecta al abrir «Autogenerar Rutas» (Paso 1), según la población, "
+                        + "el % de transporte público y los POIs, y se guarda para generar las rutas."),
+                new Separator(),
                 subtitulo("Reloj"),
                 hora,
                 lblHoraSimulada,
@@ -936,7 +1017,8 @@ public class LuisYVentanaPrincipal {
                 subtitulo("Demanda de pasajeros"),
                 new HBox(8, new Label("Escala de simulación"), escalaDemanda),
                 ayuda("La demanda de pasajeros se calcula automáticamente según la población y la hora simulada. "
-                        + "Para cambiarla, ajusta la población o el % de transporte público en «Configuración de Ciudad»."),
+                        + "Cada pasajero simulado representa 10 habitantes: con ×10 (por defecto) se inyecta la demanda "
+                        + "real de la ciudad; ×1 inyecta la décima parte. Para cambiarla, ajusta la población o el % de transporte público en «Configuración de Ciudad»."),
                 ayuda("Factores: mañana 2.5x · mediodía 1.8x · tarde 2.8x · noche 0.2x. "
                         + "Capacidad: 18 pasajeros por micro."));
     }
@@ -945,6 +1027,15 @@ public class LuisYVentanaPrincipal {
         nombreEvento.setPromptText("Nombre del evento (opcional)");
         listaEventos.setPlaceholder(new Label("Sin eventos activos."));
         listaEventos.setPrefHeight(160);
+        chkPoliciasDinamicos.setWrapText(true);
+        chkPoliciasDinamicos.setSelected(true);
+        chkPoliciasDinamicos.selectedProperty().addListener((o, antes, activo) -> {
+            motor.ejecutar(s -> s.setPoliciasDinamicos(activo));
+            lblEstado.setText(activo
+                    ? "Policías dinámicos activados: agilizan las intersecciones con más de "
+                    + EberthMSimuladorBuses.COLA_PARA_POLICIA + " vehículos en cola."
+                    : "Policías dinámicos desactivados; los desplegados se retiran solos.");
+        });
         return new VBox(10,
                 subtitulo("Incidentes viales"),
                 subtitulo("Eventos locales · elige uno y haz doble clic en el mapa"),
@@ -953,6 +1044,12 @@ public class LuisYVentanaPrincipal {
                 new Separator(),
                 subtitulo("Eventos globales · afectan a toda la ciudad"),
                 crearGridEventosGlobales(),
+                new Separator(),
+                subtitulo("Eventos automáticos"),
+                chkPoliciasDinamicos,
+                ayuda("Con más de " + EberthMSimuladorBuses.COLA_PARA_POLICIA + " vehículos en cola en una "
+                        + "misma vía llega un policía por " + EberthMGeneradorEventos.DURACION_POLICIA_MINUTOS
+                        + " min simulados: la luz roja de ese semáforo dura la mitad y la cola avanza más rápido."),
                 new Separator(),
                 subtitulo("Eventos activos"),
                 listaEventos,
@@ -1299,6 +1396,7 @@ public class LuisYVentanaPrincipal {
             s.actualizarEventos(List.of());
         });
         grafo = null;
+        limpiarDemandaCiudad();
         puntos.clear();
         puntosModificados = false;
         actualizarListaPuntos();
@@ -1307,6 +1405,7 @@ public class LuisYVentanaPrincipal {
         mapa.setEventos(List.of());
         mapa.setViasAfectadas(List.of(), List.of());
         rutasMicros.clear();
+        regenerarSemaforos();
         rutasMicrosVisibles.clear();
         gestor.limpiar();
         listaTrayectos.getItems().clear();
@@ -1419,6 +1518,136 @@ public class LuisYVentanaPrincipal {
     }
 
     // ==================================================================
+    //  DEMANDA DE LA CIUDAD (PASO 1 DE AUTOGENERAR RUTAS)
+    // ==================================================================
+
+    /** Panel de resultados de la demanda; se llena cuando «Autogenerar Rutas» proyecta la demanda (Paso 1). */
+    private VBox crearPanelDemanda() {
+        panelResultadosDemanda.getStyleClass().add("panel-estadisticas");
+        panelResultadosDemanda.setVisible(false);
+        panelResultadosDemanda.setManaged(false);
+        return panelResultadosDemanda;
+    }
+
+    private void mostrarResultadosDemanda(EberthMDemandaCiudad demanda, String nombreCiudad) {
+        Label titulo = new Label("Resultados de la demanda");
+        titulo.getStyleClass().add("subtitulo");
+        Label resumen = new Label(demanda.resumen(nombreCiudad) + "\n\n"
+                + demanda.resumenZona(demanda.zonaMayorOrigen()));
+        resumen.setWrapText(true);
+        lblCobertura.setWrapText(true);
+
+        CategoryAxis ejeHora = new CategoryAxis();
+        ejeHora.setLabel("Hora del día");
+        NumberAxis ejeViajes = new NumberAxis();
+        ejeViajes.setLabel("Pasajeros");
+        BarChart<String, Number> grafico = new BarChart<>(ejeHora, ejeViajes);
+        grafico.setLegendVisible(false);
+        grafico.setAnimated(false);
+        grafico.setCategoryGap(2);
+        grafico.setPrefHeight(230);
+        grafico.setMinHeight(230);
+        grafico.setTitle("Demanda por hora");
+        XYChart.Series<String, Number> serie = new XYChart.Series<>();
+        double[] porHora = demanda.viajesPorHora();
+        for (int h = 0; h < 24; h++) {
+            XYChart.Data<String, Number> dato = new XYChart.Data<>(String.format("%02d", h), Math.round(porHora[h]));
+            boolean pico = EberthMGeneradorDemanda.franja(h) == EberthMGeneradorDemanda.Franja.PICO_MANANA
+                    || EberthMGeneradorDemanda.franja(h) == EberthMGeneradorDemanda.Franja.PICO_TARDE;
+            dato.nodeProperty().addListener((o, a, nodo) -> {
+                if (nodo != null) nodo.setStyle("-fx-bar-fill: " + (pico ? "#E5243B" : "#4A90D9") + ";");
+            });
+            serie.getData().add(dato);
+        }
+        grafico.getData().add(serie);
+
+        Slider hora = new Slider(0, 23, demanda.horaPico());
+        hora.setMajorTickUnit(1);
+        hora.setMinorTickCount(0);
+        hora.setSnapToTicks(true);
+        hora.valueProperty().addListener((o, a, v) -> mostrarGenteDemanda(demanda, v.intValue()));
+        mostrarGenteDemanda(demanda, demanda.horaPico());
+
+        Button quitar = boton("Quitar demanda del mapa", this::limpiarDemandaCiudad);
+        quitar.setMaxWidth(Double.MAX_VALUE);
+        panelResultadosDemanda.getChildren().setAll(titulo, new Separator(), resumen, grafico,
+                subtitulo("Gente en el mapa a las…"), lblHoraDemanda, hora,
+                new Separator(),
+                subtitulo("🚌 Cobertura de las rutas"), lblCobertura, new Separator(),
+                subtitulo("🏁 Top 5 destinos"), listaRanking(demanda.topDestinos(5), "viajes al día"),
+                subtitulo("🏘 Top 5 orígenes"), listaRanking(demanda.topOrigenes(5), "viajes al día"),
+                quitar);
+        panelResultadosDemanda.setVisible(true);
+        panelResultadosDemanda.setManaged(true);
+        actualizarCoberturaDemanda();
+    }
+
+    /** Advertencia clara si, tras generar, las rutas cubren menos de la mitad de la demanda. */
+    private void avisarCoberturaInsuficiente(EberthMDemandaCiudad demanda, int generadas) {
+        if (demanda == null) return;
+        EberthMCoberturaDemanda.Resultado r = EberthMCoberturaDemanda.evaluar(demanda, List.copyOf(rutasMicros));
+        if (r.porcentaje() >= EberthMCoberturaDemanda.COBERTURA_MINIMA) return;
+        String aviso = String.format(java.util.Locale.ROOT,
+                "Se generaron %d rutas. Cobertura alcanzada: %.0f %%. Con %d rutas en total solo se cubre "
+                        + "menos de la mitad de la demanda de la ciudad: vuelve a «Autogenerar Rutas» y "
+                        + "elige una cobertura objetivo mayor.",
+                generadas, r.porcentaje() * 100, rutasMicros.size());
+        lblEstado.setText("⚠ " + aviso);
+        Alert alerta = new Alert(Alert.AlertType.WARNING, aviso);
+        estilizarDialogo(alerta);
+        alerta.setTitle("Cobertura insuficiente");
+        alerta.setHeaderText("Faltan rutas");
+        alerta.show();
+    }
+
+    /** Cuántos pasajeros cubre cada ruta y avisos de zonas con menos del 50 % cubierto. */
+    private void actualizarCoberturaDemanda() {
+        if (demandaCiudad == null) {
+            estadisticasLateral.setCoberturaDemanda(null);
+            estadisticasFlotante.setCoberturaDemanda(null);
+            return;
+        }
+        if (rutasMicros.isEmpty()) {
+            lblCobertura.setText("Aún no hay rutas: pulsa «Autogenerar Rutas» para cubrir esta demanda.");
+            estadisticasLateral.setCoberturaDemanda(0.0);
+            estadisticasFlotante.setCoberturaDemanda(0.0);
+            return;
+        }
+        EberthMCoberturaDemanda.Resultado r = EberthMCoberturaDemanda.evaluar(demandaCiudad, List.copyOf(rutasMicros));
+        lblCobertura.setText(r.texto());
+        estadisticasLateral.setCoberturaDemanda(r.porcentaje());
+        estadisticasFlotante.setCoberturaDemanda(r.porcentaje());
+    }
+
+    private void mostrarGenteDemanda(EberthMDemandaCiudad demanda, int hora) {
+        long viajes = Math.round(demanda.viajesPorHora()[hora]);
+        lblHoraDemanda.setText(String.format("%02d:00 · %,d pasajeros en la hora (cada punto ≈ varios)", hora, viajes));
+        mapa.setGenteDemanda(demanda.puntosGente(hora));
+    }
+
+    private static VBox listaRanking(List<EberthMDemandaCiudad.Conteo> filas, String unidad) {
+        VBox lista = new VBox(3);
+        int n = 1;
+        for (EberthMDemandaCiudad.Conteo c : filas) {
+            Label fila = new Label(String.format("%d. %s — %,d %s", n++, c.nombre(), c.viajes(), unidad));
+            fila.setWrapText(true);
+            lista.getChildren().add(fila);
+        }
+        return lista;
+    }
+
+    private void limpiarDemandaCiudad() {
+        demandaCiudad = null;
+        estadisticasLateral.setCoberturaDemanda(null);
+        estadisticasFlotante.setCoberturaDemanda(null);
+        lblCobertura.setText("");
+        panelResultadosDemanda.getChildren().clear();
+        panelResultadosDemanda.setVisible(false);
+        panelResultadosDemanda.setManaged(false);
+        mapa.setGenteDemanda(null);
+    }
+
+    // ==================================================================
     //  ACCIONES DE SIMULACIÓN
     // ==================================================================
 
@@ -1478,7 +1707,21 @@ public class LuisYVentanaPrincipal {
             lblEstado.setText("Marca al menos una micro en «Rutas y Puntos».");
             return;
         }
+        // Lo escrito en el panel de configuración rige aunque no se haya pulsado «Aplicar».
+        if (ciudadActual != null && parametrosCiudad != null) {
+            try {
+                EberthMParametrosCiudad vigentes = leerParametrosDelPanel();
+                parametrosCiudad = vigentes;
+                parametrosPorCiudad.put(ciudadActual.id(), vigentes);
+                guardarConfigCiudades();
+            } catch (IllegalArgumentException ex) {
+                lblEstado.setText("Parámetros de ciudad no válidos: " + ex.getMessage());
+                return;
+            }
+            enviarParametrosAlMotor();
+        }
         PieroGGrafoVial red = grafo;
+        EberthMParametrosCiudad parametros = parametrosCiudad == null ? null : parametrosCiudad.copia();
         int hora = horaInicio.getValue();
         int minuto = minutoInicio.getValue();
         double velocidad = velocidadSimulacion.getValue() == null ? 1.0 : velocidadSimulacion.getValue();
@@ -1490,6 +1733,7 @@ public class LuisYVentanaPrincipal {
                 .map(p -> new EberthMPoi(p.nombre(), p.lon(), p.lat(),
                         EberthMCategoriaPoi.desde(p.tipo())))
                 .toList();
+        EberthMDemandaCiudad demandaPrevia = demandaCiudad;
         lblEstado.setText("Preparando " + seleccionadas.size() + " servicios…");
         trabajoIniciado();
         // Hora punta y recálculo de trayectos se hacen en el hilo del motor:
@@ -1501,9 +1745,20 @@ public class LuisYVentanaPrincipal {
             s.setVelocidadSimulacion(velocidad);
             s.setEscalaDemanda(escala);
             s.setPuntosInteres(pois);
+            // La gente nace según la demanda de la ciudad con los parámetros vigentes; se calcula aquí
+            // aunque no se haya abierto «Autogenerar Rutas» (sin ella la simulación quedaría sin demanda).
+            EberthMDemandaCiudad demanda = demandaPrevia;
+            if (parametros != null && !pois.isEmpty()) {
+                try {
+                    demanda = EberthMDemandaCiudad.generar(red, pois, parametros, dia);
+                } catch (IllegalArgumentException ex) {
+                    LOG.log(Level.FINE, "No se pudo proyectar la demanda para la simulación", ex);
+                }
+            }
+            s.setDemandaCiudad(demanda);
             s.iniciar(actualizadas, hora, minuto);
-            return actualizadas.size();
-        }).whenComplete((cantidad, error) -> Platform.runLater(() -> {
+            return new Object[]{actualizadas.size(), demanda};
+        }).whenComplete((resultado, error) -> Platform.runLater(() -> {
             trabajoTerminado();
             if (error != null) {
                 Throwable causa = error.getCause() != null ? error.getCause() : error;
@@ -1511,6 +1766,8 @@ public class LuisYVentanaPrincipal {
                 lblEstado.setText("No se pudo iniciar la simulación: " + causa.getMessage());
                 return;
             }
+            int cantidad = (Integer) resultado[0];
+            if (resultado[1] != null) demandaCiudad = (EberthMDemandaCiudad) resultado[1];
             lblEstado.setText("Servicios activos: " + cantidad
                     + ". Salidas programadas desde ambos terminales, según frecuencia.");
         }));
@@ -1520,6 +1777,7 @@ public class LuisYVentanaPrincipal {
         EberthMMotorSimulacion.Instantanea foto = motor.instantanea();
         if (foto.version() == versionUiSimulacion) return;
         versionUiSimulacion = foto.version();
+        if (btnPlay != null) btnPlay.setText(foto.ejecutando() ? "⏸" : "▶");
         if (!foto.haySimulacion()) {
             estadisticasLateral.actualizar(foto);
             estadisticasFlotante.actualizar(foto);
@@ -1634,15 +1892,41 @@ public class LuisYVentanaPrincipal {
             lblEstado.setText("Carga al menos dos puntos de interés antes de autogenerar rutas.");
             return;
         }
-        Optional<EberthMGeneradorRutas.Opciones> elegidas = pedirOpcionesGeneracion();
+        EberthMTipoDia diaElegido = selectorTipoDia.getValue() == null ? EberthMTipoDia.LABORAL : selectorTipoDia.getValue();
+        List<EberthMPoi> poisParaDemanda = puntos.stream()
+                .filter(p -> ES_POI.contains(p.tipo()))
+                .map(p -> new EberthMPoi(p.nombre(), p.lon(), p.lat(), EberthMCategoriaPoi.desde(p.tipo())))
+                .toList();
+        Optional<LuisYDialogoAutogenerarRutas.Seleccion> elegidas = LuisYDialogoAutogenerarRutas.mostrar(
+                this::estilizarDialogo, ciudadActual == null ? "La ciudad" : ciudadActual.nombre(),
+                parametrosCiudad == null ? null : parametrosCiudad.copia(), diaElegido, grafo,
+                List.copyOf(puntos), poisParaDemanda, List.copyOf(rutasMicros), this::guardarDemandaCiudad);
         if (elegidas.isEmpty()) return;
-        EberthMGeneradorRutas.Opciones opciones = elegidas.get();
+        EberthMGeneradorRutas.Opciones opciones = elegidas.get().opciones();
+        long semilla = elegidas.get().semilla();
         PieroGGrafoVial red = grafo;
         List<LuisYPuntoImportante> pois = List.copyOf(puntos);
         List<EberthMServicioMicro> existentes = List.copyOf(rutasMicros);
         EberthMParametrosCiudad ciudad = parametrosCiudad == null ? null : parametrosCiudad.copia();
-        enSegundoPlano("Generando rutas", () ->
-                new EberthMGeneradorRutas(red, pois, ciudad).generar(existentes, opciones), generadas -> {
+        // La demanda del Paso 1 queda en memoria y es la base del generador.
+        EberthMDemandaCiudad demandaPrevia = elegidas.get().demanda() != null ? elegidas.get().demanda() : demandaCiudad;
+        EberthMDemandaCiudad[] demandaUsada = new EberthMDemandaCiudad[1];
+        enSegundoPlano("Generando rutas", () -> {
+            EberthMGeneradorRutas generador = new EberthMGeneradorRutas(red, pois, ciudad, new java.util.Random(semilla));
+            // La oferta nace de la demanda proyectada en el Paso 1.
+            EberthMDemandaCiudad demanda = demandaPrevia;
+            demandaUsada[0] = demanda;
+            // Con demanda generada, la oferta nace de ella: destinos populares y zonas sin cobertura.
+            if (demanda != null) return generador.generarDesdeDemanda(demanda, existentes, opciones);
+            try {
+                // La demanda sin cobertura que detectó la simulación orienta los extremos nuevos.
+                generador.priorizarZonasSinCobertura(
+                        motor.calcular(EberthMSimuladorBuses::zonasSinCoberturaLonLat).join());
+            } catch (RuntimeException ex) {
+                LOG.log(Level.FINE, "Sin zonas sin cobertura para orientar la generación", ex);
+            }
+            return generador.generar(existentes, opciones);
+        }, generadas -> {
             List<EberthMServicioMicro> aceptadas = new ArrayList<>();
             for (EberthMServicioMicro servicio : generadas) {
                 if (EberthMGestorServicios.flotaExcedida(rutasMicros, servicio)) break;
@@ -1652,74 +1936,46 @@ public class LuisYVentanaPrincipal {
                 aceptadas.add(servicio);
             }
             if (aceptadas.isEmpty()) {
-                lblEstado.setText("No se pudieron generar rutas: faltan POIs lejanos conectados por calles.");
+                lblEstado.setText("No se pudieron generar rutas: el mapa no ofrece trazados de al menos 4 km que pasen por POIs populares.");
                 return;
             }
             actualizarFilasRutasMicro();
             actualizarVisualizacionRutas();
             guardarRutasMicros();
-            lblEstado.setText("Se generaron " + aceptadas.size() + " rutas automáticas.");
+            EberthMDemandaCiudad demanda = demandaUsada[0];
+            if (demanda != null) demandaCiudad = demanda;
+            actualizarCoberturaDemanda();
+            anunciarRutasGeneradas(demanda, aceptadas.size());
         });
     }
 
-    /** Aplica al valor del spinner el texto escrito; si no es un número válido, restaura el valor. */
-    private void confirmarTexto(Spinner<Integer> spinner) {
-        try {
-            spinner.getValueFactory().setValue(Integer.parseInt(spinner.getEditor().getText().trim()));
-        } catch (NumberFormatException ex) {
-            spinner.getEditor().setText(String.valueOf(spinner.getValue()));
+    /** Paso 4: «Se generaron X rutas. Cobertura alcanzada: Y %»; con menos del 50 % sale además la alerta de cobertura. */
+    private void anunciarRutasGeneradas(EberthMDemandaCiudad demanda, int generadas) {
+        if (demanda == null) {
+            lblEstado.setText("Se generaron " + generadas + " rutas. Sin POIs no hay demanda con que orientarlas.");
+            return;
         }
+        double cobertura = EberthMCoberturaDemanda.evaluar(demanda, List.copyOf(rutasMicros)).porcentaje();
+        String mensaje = String.format(java.util.Locale.ROOT, "Se generaron %d rutas. Cobertura alcanzada: %.0f %%.",
+                generadas, cobertura * 100);
+        lblEstado.setText(mensaje);
+        if (cobertura < EberthMCoberturaDemanda.COBERTURA_MINIMA) {
+            avisarCoberturaInsuficiente(demanda, generadas);
+            return;
+        }
+        Alert info = new Alert(Alert.AlertType.INFORMATION, mensaje, ButtonType.OK);
+        estilizarDialogo(info);
+        info.setTitle("Autogenerar rutas");
+        info.setHeaderText("Rutas generadas");
+        info.show();
     }
 
-    /** Diálogo con los parámetros de la autogeneración; {@code empty} si el usuario cancela. */
-    private Optional<EberthMGeneradorRutas.Opciones> pedirOpcionesGeneracion() {
-        Spinner<Integer> rutas = new Spinner<>(1, 30, 5);
-        Spinner<Integer> paradas = new Spinner<>(3, 10, 5);
-        int sugeridas = EberthMGeneradorRutas.unidadesSugeridas(parametrosCiudad);
-        Spinner<Integer> unidades = new Spinner<>(5, 150, Math.clamp(sugeridas, 5, 150));
-        CheckBox flotaAuto = new CheckBox("Calcular flota según la ciudad");
-        flotaAuto.setSelected(true);
-        unidades.disableProperty().bind(flotaAuto.selectedProperty());
-        Label sugerencia = new Label("Sugerido: " + sugeridas + " micros por ruta (población × % transporte ÷ 5000)");
-        sugerencia.getStyleClass().add("texto-secundario");
-        sugerencia.setWrapText(true);
-        Spinner<Integer> frecuencia = new Spinner<>(5, 30, 10);
-        Spinner<Integer> frecuenciaPunta = new Spinner<>(1, 10, 3);
-        List<Spinner<Integer>> campos = List.of(rutas, paradas, unidades, frecuencia, frecuenciaPunta);
-        for (Spinner<Integer> sp : campos) {
-            sp.setEditable(true);
-            sp.setMaxWidth(Double.MAX_VALUE);
-            // Escribir el número directamente: se confirma al salir del campo o con Enter.
-            sp.getEditor().focusedProperty().addListener((o, antes, ahora) -> {
-                if (!ahora) confirmarTexto(sp);
-            });
-            sp.getEditor().setOnAction(e -> confirmarTexto(sp));
-        }
-        GridPane form = new GridPane();
-        form.setHgap(10);
-        form.setVgap(10);
-        form.addRow(0, new Label("Cantidad de rutas (1-30)"), rutas);
-        form.addRow(1, new Label("Paradas promedio por ruta (3-10)"), paradas);
-        form.addRow(2, new Label("Unidades por ruta (5-150)"), unidades);
-        form.add(flotaAuto, 1, 3);
-        form.add(sugerencia, 0, 4, 2, 1);
-        form.addRow(5, new Label("Frecuencia hora normal (5-30 min)"), frecuencia);
-        form.addRow(6, new Label("Frecuencia hora punta (1-10 min)"), frecuenciaPunta);
-
-        Dialog<EberthMGeneradorRutas.Opciones> dialogo = new Dialog<>();
-        estilizarDialogo(dialogo);
-        dialogo.setTitle("Autogenerar rutas");
-        dialogo.setHeaderText("Parámetros de las rutas a generar");
-        dialogo.getDialogPane().setContent(form);
-        dialogo.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
-        dialogo.setResultConverter(b -> {
-            if (b != ButtonType.OK) return null;
-            campos.forEach(this::confirmarTexto);
-            return new EberthMGeneradorRutas.Opciones(rutas.getValue(), paradas.getValue(),
-                    flotaAuto.isSelected() ? 0 : unidades.getValue(), frecuencia.getValue(),
-                    Math.min(frecuenciaPunta.getValue(), frecuencia.getValue()));
-        });
-        return dialogo.showAndWait();
+    /** Guarda en memoria la demanda proyectada en el Paso 1 y la muestra en el panel de simulación. */
+    private void guardarDemandaCiudad(EberthMDemandaCiudad demanda) {
+        demandaCiudad = demanda;
+        String nombreCiudad = ciudadActual == null ? "La ciudad" : ciudadActual.nombre();
+        mostrarResultadosDemanda(demanda, nombreCiudad);
+        lblEstado.setText("Demanda proyectada: " + demanda.resumen(nombreCiudad));
     }
 
     private void eliminarRutaMicro(EberthMServicioMicro ruta) {
@@ -1742,6 +1998,7 @@ public class LuisYVentanaPrincipal {
 
     /** Filas con checkbox (vista múltiple), muestra de color y acciones. */
     private void actualizarFilasRutasMicro() {
+        if (demandaCiudad != null) actualizarCoberturaDemanda();
         filasRutasMicros.getChildren().clear();
         EberthMServicioMicro seleccion = selectorMicro.getValue();
         String idSeleccion = seleccion == null ? null : seleccion.id();
@@ -1910,6 +2167,7 @@ public class LuisYVentanaPrincipal {
     }
 
     private void actualizarVisualizacionRutas() {
+        regenerarSemaforos();
         if (actualizandoSelectorMicro) return;
         EberthMServicioMicro micro = microSeleccionada();
         boolean modoIdaVuelta = btnModoIdaVuelta.isSelected() && micro != null;
@@ -2054,19 +2312,18 @@ public class LuisYVentanaPrincipal {
     private void actualizarListaPuntos() {
         puntosObservables.setAll(puntos);
         mapa.setPuntos(puntos);
-        regenerarSemaforos();
     }
 
-    /** Hospitales, colegios y mercados cargados deciden dónde hay semáforos. */
+    /** Los semáforos solo existen donde se cruzan al menos dos de las rutas de micros actuales. */
     private void regenerarSemaforos() {
         PieroGGrafoVial red = grafo;
         if (red == null) return;
-        List<double[]> criticos = puntos.stream()
-                .filter(p -> p.tipo() == LuisYPuntoImportante.TipoPunto.SALUD
-                        || p.tipo() == LuisYPuntoImportante.TipoPunto.EDUCACION
-                        || p.tipo() == LuisYPuntoImportante.TipoPunto.MERCADO)
-                .map(p -> new double[]{p.lon(), p.lat()}).toList();
-        motor.ejecutar(s -> red.regenerarSemaforos(criticos));
+        List<List<PieroGEdge>> rutas = rutasMicros.stream().map(r -> {
+            List<PieroGEdge> tramos = new ArrayList<>(r.trayecto().edges());
+            tramos.addAll(r.trayectoVuelta().edges());
+            return tramos;
+        }).toList();
+        motor.ejecutar(s -> red.regenerarSemaforos(rutas));
     }
 
     /** Lee {@code mapas/<ciudad>/puntos.json}: marcadores encima de las calles. */
@@ -2824,6 +3081,7 @@ public class LuisYVentanaPrincipal {
         if (rutas) {
             motor.ejecutar(s -> s.actualizarServicios(List.of()));
             rutasMicros.clear();
+            regenerarSemaforos();
             rutasMicrosVisibles.clear();
             gestor.limpiar();
             listaTrayectos.getItems().clear();
