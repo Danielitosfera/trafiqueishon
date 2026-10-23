@@ -2,14 +2,12 @@ package trafiqueishon.ui;
 
 import javafx.application.Platform;
 import javafx.animation.AnimationTimer;
+import javafx.scene.CacheHint;
 import javafx.geometry.VPos;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.layout.Pane;
 import javafx.scene.paint.Color;
-import javafx.scene.paint.CycleMethod;
-import javafx.scene.paint.RadialGradient;
-import javafx.scene.paint.Stop;
 import javafx.scene.shape.ArcType;
 import javafx.scene.shape.Rectangle;
 import javafx.scene.shape.StrokeLineCap;
@@ -67,6 +65,9 @@ public class LuisYMapaRutasCanvas extends Pane {
     private static final long INTERVALO_MINIMO_NANOS = 1_000_000_000L / 30;
     /** Con más micros que esto en pantalla el mapa baja a 20 FPS. */
     private static final int MICROS_PARA_BAJAR_FPS = 500;
+    private static final int RUTAS_PARA_BAJAR_FPS = 50;
+    /** Desde este zoom los micros se dibujan con su forma real; antes, como rectángulos. */
+    private static final double ZOOM_FORMA_MICRO = 48;
     private static final long INTERVALO_MUCHOS_MICROS_NANOS = 1_000_000_000L / 20;
 
     // ===== Colores =====
@@ -112,20 +113,24 @@ public class LuisYMapaRutasCanvas extends Pane {
 
     // ===== LOD =====
     /** Margen de seguridad (fracción del lado) pintado fuera de pantalla en la capa de vías. */
-    private static final double MARGEN_VIEWPORT = 0.20;
-    /** Por debajo de este zoom: sin POIs, sin semáforos, vías finas y vehículos de 2x2 px. */
+    private static final double MARGEN_VIEWPORT = 0.12;
+    /** Por debajo de este zoom: micros de 1 px; sin semáforos, eventos, policías, textos ni clústeres. */
     private static final double ZOOM_LEJANO = 5.0;
     /** Por encima de este zoom: nombres de calles y vehículos con su forma real. */
     private static final double ZOOM_CERCANO = 15.0;
     /** Los círculos de «zonas sin cobertura» solo se dibujan con zoom mayor; antes basta el contador. */
     private static final double ZOOM_ZONAS_SIN_COBERTURA = 10.0;
+    private static final Color COLOR_PARADA_ESPERA = Color.STEELBLUE.deriveColor(0, 1, 1, 0.85);
+    private static final Color COLOR_PARADA_TRANSBORDO = Color.MEDIUMPURPLE.deriveColor(0, 1, 1, 0.95);
     private static final Color COLOR_GENTE_DEMANDA = Color.STEELBLUE.deriveColor(0, 1, 1, 0.75);
     /** Zoom a partir del cual se rotulan los puntos en modo automático. */
-    private static final double ZOOM_ETIQUETAS_PUNTOS = 10.0;
+    private static final double ZOOM_ETIQUETAS_PUNTOS = ZOOM_CERCANO;
     /** Por debajo de este zoom no se dibujan clústeres ni puntos sueltos: mapa limpio. */
-    private static final double ZOOM_MAPA_LIMPIO = 10.0;
+    private static final double ZOOM_MAPA_LIMPIO = ZOOM_CERCANO;
     /** Margen (fracción del lado) fuera de pantalla dentro del cual aún se dibujan los vehículos. */
-    private static final double MARGEN_CULLING = 0.10;
+    private static final double MARGEN_CULLING = 0.05;
+    /** El canvas dibuja a lo sumo estos eventos: los más cercanos al centro de la cámara. */
+    private static final int MAX_EVENTOS_DIBUJADOS = 10;
     /** Grosor de cada calle (y de cada línea de una avenida de doble vía), en píxeles. */
     private static final double ANCHO_VIA_PX = 1.5;
     /** Separación entre las dos líneas de una avenida, en píxeles. */
@@ -134,9 +139,6 @@ public class LuisYMapaRutasCanvas extends Pane {
     private static final double CELDA_CLUSTER = 38;
     /** Por encima de este zoom ya no se agrupan puntos. */
     private static final double ZOOM_SIN_CLUSTER = 48;
-    /** Mapas con más vías que esto ocultan calles secundarias con zoom lejano. */
-    private static final int UMBRAL_MAPA_GRANDE = 60_000;
-    private static final double ZOOM_DETALLE_MAPA_GRANDE = 4.0;
     /** Si aun así quedan más vías visibles, se omiten las secundarias. */
     private static final int MAX_VIAS_DETALLE = 80_000;
 
@@ -167,6 +169,14 @@ public class LuisYMapaRutasCanvas extends Pane {
     public record ZonaCroquis(String nombre, double lon, double lat) {}
 
     private record DensidadUrbana(boolean[] celdas, double cx, double cy) {}
+
+    /**
+     * Zoom al que salta cada nivel (1 = lejano, 2 = medio, 3 = cercano, 4-5 = detalle fino).
+     * Los niveles 4 y 5 siguen dibujando todo, solo que más grande.
+     */
+    private static final double[] ZOOM_POR_NIVEL_LOD = {1.0, 6.0, 16.0, 48.0, 162.0};
+    /** Un chunk es una pantalla; las vías se consultan en bloques de 3x3 chunks y se reutilizan. */
+    private static final int CHUNKS_POR_LADO = 3;
 
     private static final double[] ZOOMS = {
             0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0,
@@ -233,17 +243,41 @@ public class LuisYMapaRutasCanvas extends Pane {
     private double zoom = 1.0;
     private double escalaBase = 1.0;
     private int nivelZoom = 2;
+    /** Rueda del ratón: desactivada por defecto (el zoom va por niveles con los botones + / -). */
+    private boolean zoomConRueda;
+    /** Clic izquierdo arrastra el mapa sin necesidad de la «mano» (modo clásico). */
+    private boolean arrastrarConClicIzquierdo;
+    /** Herramienta «mano»: mientras esté activa, arrastrar mueve el mapa. */
+    private boolean modoMano;
+    private int ultimoNivelLod = -1;
+    private java.util.function.IntConsumer onNivelLod;
     private double anchoAnterior, altoAnterior;
 
     // Estado con el que se pintó la capa de vías (paneo por desplazamiento).
     private double offsetXVias, offsetYVias;
     private boolean arrastrando;
 
+    // Caché de chunks de vías (ver viasVisibles).
+    private STRtree cacheViasIndice;
+    private Envelope cacheViasCaja;
+    private double cacheViasZoom;
+    private List<PieroGVia> cacheVias = List.of();
+
     private double lastMouseX, lastMouseY;
     private boolean necesitaRedibujar = true;
     private boolean viasNecesitanRedibujarse = true;
     private long ultimoRenderNanos;
     private long ultimaDuracionRender;
+    /**
+     * Modo ligero: si un fotograma tarda más de {@link #UMBRAL_MODO_LIGERO_NANOS}, se omiten los
+     * detalles decorativos (gente, caminantes, semáforos, humo, lluvia) hasta que vuelva a bajar de
+     * {@link #UMBRAL_SALIDA_LIGERO_NANOS}. Así los micros y las rutas se mueven a ≥ 20 FPS.
+     */
+    private boolean modoLigero;
+    private static final long UMBRAL_MODO_LIGERO_NANOS = 40_000_000L;
+    private static final long UMBRAL_SALIDA_LIGERO_NANOS = 22_000_000L;
+    /** Tope de paradas dibujadas como círculo con zoom cercano; el resto, como cuadrito. */
+    private static final int MAX_PARADAS_CIRCULO = 400;
     /** Micros dentro de la pantalla en el último fotograma (decide los FPS del siguiente). */
     private int vehiculosVisibles;
     private Supplier<EberthMMotorSimulacion.Instantanea> fuenteVehiculos;
@@ -259,6 +293,7 @@ public class LuisYMapaRutasCanvas extends Pane {
     private final AnimationTimer renderizador = new AnimationTimer() {
         @Override
         public void handle(long ahora) {
+            contarFps(ahora);
             try {
                 leerFotoSimulacion();
                 // La lluvia está animada: pide un fotograma nuevo mientras haya alguna activa.
@@ -267,8 +302,10 @@ public class LuisYMapaRutasCanvas extends Pane {
                 // Presupuesto adaptativo: si un fotograma tarda más de 33 ms
                 // (p. ej. Lima con miles de vehículos) se espacian los siguientes
                 // en lugar de saturar el hilo de JavaFX.
-                long base = vehiculosVisibles > MICROS_PARA_BAJAR_FPS
-                        ? INTERVALO_MUCHOS_MICROS_NANOS : INTERVALO_MINIMO_NANOS;
+                // Más de 500 micros o 50 rutas: el lienzo baja a 20 FPS; el motor sigue a su ritmo.
+                boolean pesado = vehiculos.size() > MICROS_PARA_BAJAR_FPS
+                        || rutasMicros.size() > RUTAS_PARA_BAJAR_FPS;
+                long base = pesado ? INTERVALO_MUCHOS_MICROS_NANOS : INTERVALO_MINIMO_NANOS;
                 long intervalo = Math.max(base, ultimaDuracionRender * 5 / 4);
                 if (ahora - ultimoRenderNanos < intervalo) return;
                 necesitaRedibujar = false;
@@ -276,11 +313,33 @@ public class LuisYMapaRutasCanvas extends Pane {
                 long inicio = System.nanoTime();
                 renderizar();
                 ultimaDuracionRender = System.nanoTime() - inicio;
+                if (ultimaDuracionRender > UMBRAL_MODO_LIGERO_NANOS) modoLigero = true;
+                else if (ultimaDuracionRender < UMBRAL_SALIDA_LIGERO_NANOS) modoLigero = false;
             } catch (RuntimeException ex) {
                 LOG.log(Level.SEVERE, "Se omitió un fotograma por un error del mapa", ex);
             }
         }
     };
+
+    private long inicioVentanaFps;
+    private int pulsosVentanaFps;
+    private java.util.function.DoubleConsumer onFps;
+
+    /** FPS reales (pulsos de JavaFX por segundo) promediados cada 0,5 s con {@code System.nanoTime}. */
+    private void contarFps(long ahora) {
+        long t = System.nanoTime();
+        if (inicioVentanaFps == 0) inicioVentanaFps = t;
+        pulsosVentanaFps++;
+        long transcurrido = t - inicioVentanaFps;
+        if (transcurrido < 500_000_000L) return;
+        double fps = pulsosVentanaFps * 1e9 / transcurrido;
+        inicioVentanaFps = t;
+        pulsosVentanaFps = 0;
+        if (onFps != null) onFps.accept(fps);
+    }
+
+    /** Recibe, en el hilo de JavaFX, los FPS actuales cada medio segundo. */
+    public void setOnFps(java.util.function.DoubleConsumer cb) { onFps = cb; }
 
     public LuisYMapaRutasCanvas() {
         this(new BetoHFuenteMapa());
@@ -289,6 +348,9 @@ public class LuisYMapaRutasCanvas extends Pane {
     public LuisYMapaRutasCanvas(BetoHFuenteMapa fuenteMapa) {
         this.fuenteMapa = fuenteMapa;
         capaVias = new Canvas();
+        // Capa estática (calles, rutas, textos): JavaFX la guarda como bitmap y al arrastrar solo la mueve.
+        capaVias.setCache(true);
+        capaVias.setCacheHint(CacheHint.SPEED);
         canvas = new Canvas();
         getChildren().addAll(capaVias, canvas);
         // La capa de vías es un 20% más grande por cada lado que la pantalla: al arrastrar
@@ -309,7 +371,7 @@ public class LuisYMapaRutasCanvas extends Pane {
         heightProperty().addListener((o, a, b) -> recalcularConservandoCentro());
 
         setOnScroll(e -> {
-            if (!cargado) return;
+            if (!cargado || !zoomConRueda) return;
             double delta = e.getDeltaY();
             if (Math.abs(delta) < 0.5) return;
             int nuevoNivel = Math.clamp(nivelZoom + (delta > 0 ? 1 : -1), 0, ZOOMS.length - 1);
@@ -319,7 +381,7 @@ public class LuisYMapaRutasCanvas extends Pane {
 
         setOnMousePressed(e -> { lastMouseX = e.getX(); lastMouseY = e.getY(); });
         setOnMouseDragged(e -> {
-            if (!cargado) return;
+            if (!cargado || !(modoMano || arrastrarConClicIzquierdo)) return;
             arrastrando = true;
             offsetX += e.getX() - lastMouseX;
             offsetY += e.getY() - lastMouseY;
@@ -515,6 +577,11 @@ public class LuisYMapaRutasCanvas extends Pane {
 
     private void redibujarMapa() {
         viasNecesitanRedibujarse = true;
+        int nivelLod = getNivelLod();
+        if (nivelLod != ultimoNivelLod) {
+            ultimoNivelLod = nivelLod;
+            if (onNivelLod != null) onNivelLod.accept(nivelLod);
+        }
         redibujar();
     }
 
@@ -564,20 +631,21 @@ public class LuisYMapaRutasCanvas extends Pane {
         // eventos y gente; cercano (> 15) todo. Cada dibujo se descarta solo según su zoom.
         // Las rutas viven en la capa de calles: no se recorren sus tramos en cada fotograma.
         if (zoom >= ZOOM_LEJANO) {
+            seleccionarEventosCercanos();
             dibujarViasCerradas(gc);
-            dibujarHumoTrancaderas(gc);
+            if (!modoLigero) dibujarHumoTrancaderas(gc);
             if (mostrarCalor) prepararAgrupacionVehiculos();
             if (mostrarCalor) dibujarMapaCalor(gc);
             dibujarPuntos(gc, false);
             dibujarEventos(gc);
             dibujarZonasSinCobertura(gc);
-            dibujarGenteDemanda(gc);
+            if (!modoLigero) dibujarGenteDemanda(gc);
             dibujarPasajerosEnParadas(gc);
-            dibujarCaminantes(gc);
-            dibujarSemaforos(gc);
+            if (!modoLigero) dibujarCaminantes(gc);
+            if (!modoLigero) dibujarSemaforos(gc);
         }
         dibujarVehiculos(gc);
-        if (zoom >= ZOOM_LEJANO) dibujarLluvia(gc, w, h);
+        if (zoom >= ZOOM_LEJANO && !modoLigero) dibujarLluvia(gc, w, h);
         dibujarLeyenda(gc);
     }
 
@@ -614,7 +682,8 @@ public class LuisYMapaRutasCanvas extends Pane {
         gc.save();
         gc.translate(w * MARGEN_VIEWPORT, h * MARGEN_VIEWPORT);
         if (croquisActivo()) dibujarZonasUrbanas(gc, w, h);
-        List<PieroGVia> visibles = viasVisibles(w, h);
+        // Nivel 1 (lejano): las calles no se dibujan, solo rutas y micros.
+        List<PieroGVia> visibles = zoom < ZOOM_LEJANO ? List.of() : viasVisibles(w, h);
         dibujarVias(gc, visibles);
         dibujarRutas(gc);
         dibujarNombresVias(gc, visibles);
@@ -634,19 +703,37 @@ public class LuisYMapaRutasCanvas extends Pane {
         if (indiceVias == null) return List.of();
         double escala = escalaBase * zoom;
         double mx = w * MARGEN_VIEWPORT, my = h * MARGEN_VIEWPORT;
-        Envelope caja = new Envelope((-mx - offsetX) / escala, (w + mx - offsetX) / escala,
+        Envelope vista = new Envelope((-mx - offsetX) / escala, (w + mx - offsetX) / escala,
                 (-my - offsetY) / escala, (h + my - offsetY) / escala);
-        boolean soloPrincipales = vias != null && vias.size() > UMBRAL_MAPA_GRANDE
-                && zoom < ZOOM_DETALLE_MAPA_GRANDE;
-        List<PieroGVia> candidatas = (soloPrincipales ? indiceViasPrincipales : indiceVias).query(caja);
-        boolean filtrarSecundarias = candidatas.size() > MAX_VIAS_DETALLE;
-        double minimo = 1.0 / escala;
-        List<PieroGVia> visibles = new ArrayList<>(Math.min(candidatas.size(), MAX_VIAS_DETALLE));
-        for (PieroGVia via : candidatas) {
-            if (filtrarSecundarias && !esPrincipal(via.highway)) continue;
-            if (via.maxX - via.minX < minimo && via.maxY - via.minY < minimo) continue;
-            visibles.add(via);
+        // Nivel 2 (medio): solo calles principales; del nivel 3 en adelante, todas.
+        boolean soloPrincipales = indiceViasPrincipales != null && zoom < ZOOM_CERCANO;
+        STRtree indice = soloPrincipales ? indiceViasPrincipales : indiceVias;
+        // Chunks: el árbol se consulta sobre un bloque de CHUNKS_POR_LADO² pantallas y el resultado
+        // se reutiliza mientras la vista siga dentro de él; cada fotograma solo filtra esa lista.
+        if (cacheViasIndice != indice || cacheViasZoom != zoom || cacheViasCaja == null
+                || !cacheViasCaja.contains(vista)) {
+            double ex = vista.getWidth() * (CHUNKS_POR_LADO - 1) / 2;
+            double ey = vista.getHeight() * (CHUNKS_POR_LADO - 1) / 2;
+            Envelope bloque = new Envelope(vista.getMinX() - ex, vista.getMaxX() + ex,
+                    vista.getMinY() - ey, vista.getMaxY() + ey);
+            double minimo = 1.0 / escala;
+            List<PieroGVia> candidatas = indice.query(bloque);
+            List<PieroGVia> utiles = new ArrayList<>(candidatas.size());
+            for (PieroGVia via : candidatas) {
+                if (via.maxX - via.minX < minimo && via.maxY - via.minY < minimo) continue;
+                utiles.add(via);
+            }
+            cacheViasIndice = indice;
+            cacheViasZoom = zoom;
+            cacheViasCaja = bloque;
+            cacheVias = utiles;
         }
+        List<PieroGVia> visibles = new ArrayList<>();
+        for (PieroGVia via : cacheVias) {
+            if (via.maxX >= vista.getMinX() && via.minX <= vista.getMaxX()
+                    && via.maxY >= vista.getMinY() && via.minY <= vista.getMaxY()) visibles.add(via);
+        }
+        if (visibles.size() > MAX_VIAS_DETALLE) visibles.removeIf(via -> !esPrincipal(via.highway));
         return visibles;
     }
 
@@ -705,7 +792,7 @@ public class LuisYMapaRutasCanvas extends Pane {
     }
 
     /** Zoom desde el que las vías de doble sentido se dibujan con un carril por sentido. */
-    private static final double ZOOM_DOBLE_VIA = 8;
+    private static final double ZOOM_DOBLE_VIA = ZOOM_CERCANO;
     /** Separación (px) de cada carril respecto del eje de la vía: 2 px entre ambos sentidos. */
     private static final double DESFASE_CARRIL_PX = 1;
 
@@ -821,7 +908,7 @@ public class LuisYMapaRutasCanvas extends Pane {
             gc.stroke();
         }
         gc.setStroke(color);
-        gc.setLineWidth(lejano ? 2.5 : 4.5);
+        gc.setLineWidth(lejano ? 1 : 4.5);
         if (discontinua) gc.setLineDashes(10, 10);
         gc.stroke();
         gc.setLineDashes((double[]) null);
@@ -939,11 +1026,15 @@ public class LuisYMapaRutasCanvas extends Pane {
         List<double[]> posicionesSueltos = new ArrayList<>();
         List<LuisYPuntoImportante> extremos = new ArrayList<>();
         List<double[]> posicionesExtremos = new ArrayList<>();
+        if (!estatica && puntosInicioRutas.isEmpty() && puntosFinalRutas.isEmpty()) return;
         for (LuisYPuntoImportante p : puntos) {
+            boolean esExtremo = puntosInicioRutas.contains(p.id()) || puntosFinalRutas.contains(p.id());
+            // La capa dinámica solo necesita los extremos de ruta: no se proyecta el resto.
+            if (!estatica && !esExtremo) continue;
             double px = pantallaX(lonANormX(p.lon()));
             double py = pantallaY(latANormY(p.lat()));
             if (!estaEnPantalla(px, py, 12, 12)) continue;
-            if (puntosInicioRutas.contains(p.id()) || puntosFinalRutas.contains(p.id())) {
+            if (esExtremo) {
                 if (estatica) continue;
                 extremos.add(p);
                 posicionesExtremos.add(new double[]{px, py});
@@ -1152,7 +1243,9 @@ public class LuisYMapaRutasCanvas extends Pane {
     }
 
     private static final int GOTAS_POR_LLUVIA = 30;
-    private static final double RADIO_LLUVIA_GRADIENTE_PX = 120;
+    /** Lluvia: color sólido con transparencia (sin degradados). */
+    private static final Color COLOR_LLUVIA_RELLENO = Color.DODGERBLUE.deriveColor(0, 1, 1, 0.12);
+    private static final Color COLOR_LLUVIA_BORDE = Color.DODGERBLUE.deriveColor(0, 1, 1, 0.8);
     private static final double LARGO_GOTA = 9;
     private static final double VELOCIDAD_GOTA_PX_S = 260;
 
@@ -1164,7 +1257,8 @@ public class LuisYMapaRutasCanvas extends Pane {
     private void dibujarLluvia(GraphicsContext gc, double w, double h) {
         if (!hayLluvia) return;
         double t = System.nanoTime() / 1e9;
-        for (EberthMEventoTrafico evento : eventos) {
+        for (int k = 0; k < nEventosCercanos; k++) {
+            EberthMEventoTrafico evento = eventosCercanos[k];
             if (evento.tipo() != EberthMTipoEvento.LLUVIA) continue;
             double cx = pantallaX(lonANormX(evento.lon()));
             double cy = pantallaY(latANormY(evento.lat()));
@@ -1173,18 +1267,10 @@ public class LuisYMapaRutasCanvas extends Pane {
             double r = Math.abs(pantallaX(lonANormX(evento.lon() + dLon)) - cx);
             if (r < 2 || cx + r < 0 || cy + r < 0 || cx - r > w || cy - r > h) continue;
 
-            if (r > RADIO_LLUVIA_GRADIENTE_PX) {
-                // Zona grande: degradado (casi transparente al centro) para no saturar el mapa.
-                gc.setFill(new RadialGradient(0, 0, cx, cy, r, false, CycleMethod.NO_CYCLE,
-                        new Stop(0, Color.DODGERBLUE.deriveColor(0, 1, 1, 0.03)),
-                        new Stop(0.7, Color.DODGERBLUE.deriveColor(0, 1, 1, 0.10)),
-                        new Stop(1, Color.DODGERBLUE.deriveColor(0, 1, 1, 0.28))));
-            } else {
-                gc.setFill(Color.DODGERBLUE.deriveColor(0, 1, 1, 0.18));
-            }
+            gc.setFill(COLOR_LLUVIA_RELLENO);
             gc.fillOval(cx - r, cy - r, r * 2, r * 2);
-            gc.setStroke(Color.DODGERBLUE.deriveColor(0, 1, 1, 0.8));
-            gc.setLineWidth(1.5);
+            gc.setStroke(COLOR_LLUVIA_BORDE);
+            gc.setLineWidth(1);
             gc.strokeOval(cx - r, cy - r, r * 2, r * 2);
 
             gc.save();
@@ -1193,7 +1279,7 @@ public class LuisYMapaRutasCanvas extends Pane {
             gc.closePath();
             gc.clip();
             gc.setStroke(Color.web("#CFE8FF", 0.75));
-            gc.setLineWidth(1.2);
+            gc.setLineWidth(1);
             double lado = r * 2;
             double caida = (t * VELOCIDAD_GOTA_PX_S) % lado;
             for (int i = 0; i < GOTAS_POR_LLUVIA; i++) {
@@ -1215,10 +1301,42 @@ public class LuisYMapaRutasCanvas extends Pane {
         return (x & 0xFFFFFFL) / (double) 0x1000000;
     }
 
+    private final EberthMEventoTrafico[] eventosCercanos = new EberthMEventoTrafico[MAX_EVENTOS_DIBUJADOS];
+    private final double[] distanciasEventos = new double[MAX_EVENTOS_DIBUJADOS];
+    private int nEventosCercanos;
+
+    /**
+     * Elige los {@link #MAX_EVENTOS_DIBUJADOS} eventos más cercanos al centro de la cámara
+     * (inserción en un arreglo ordenado de 10: sin asignaciones por fotograma).
+     */
+    private void seleccionarEventosCercanos() {
+        nEventosCercanos = 0;
+        if (eventos.isEmpty()) return;
+        double cx = canvas.getWidth() / 2, cy = canvas.getHeight() / 2;
+        for (EberthMEventoTrafico evento : eventos) {
+            double dx = pantallaX(lonANormX(evento.lon())) - cx;
+            double dy = pantallaY(latANormY(evento.lat())) - cy;
+            double d = dx * dx + dy * dy;
+            int n = nEventosCercanos;
+            if (n == MAX_EVENTOS_DIBUJADOS && d >= distanciasEventos[n - 1]) continue;
+            int i = Math.min(n, MAX_EVENTOS_DIBUJADOS - 1);
+            while (i > 0 && distanciasEventos[i - 1] > d) {
+                distanciasEventos[i] = distanciasEventos[i - 1];
+                eventosCercanos[i] = eventosCercanos[i - 1];
+                i--;
+            }
+            distanciasEventos[i] = d;
+            eventosCercanos[i] = evento;
+            if (n < MAX_EVENTOS_DIBUJADOS) nEventosCercanos++;
+        }
+    }
+
     private void dibujarEventos(GraphicsContext gc) {
         double w = canvas.getWidth(), h = canvas.getHeight();
         OcupacionEtiquetas ocupadas = new OcupacionEtiquetas();
-        for (EberthMEventoTrafico evento : eventos) {
+        boolean rotular = zoom > ZOOM_CERCANO;
+        for (int k = 0; k < nEventosCercanos; k++) {
+            EberthMEventoTrafico evento = eventosCercanos[k];
             double px = pantallaX(lonANormX(evento.lon()));
             double py = pantallaY(latANormY(evento.lat()));
             if (px < -20 || py < -20 || px > w + 20 || py > h + 20) continue;
@@ -1235,7 +1353,7 @@ public class LuisYMapaRutasCanvas extends Pane {
                 gc.setFill(Color.RED.deriveColor(0, 1, 1, 0.3));
                 gc.fillOval(px - radio, py - radio, radio * 2, radio * 2);
                 gc.setStroke(Color.RED);
-                gc.setLineWidth(2);
+                gc.setLineWidth(1);
                 gc.strokeOval(px - radio, py - radio, radio * 2, radio * 2);
             }
             if (evento.tipo() == EberthMTipoEvento.ACCIDENTE) {
@@ -1246,10 +1364,10 @@ public class LuisYMapaRutasCanvas extends Pane {
                 gc.setFill(colorEvento);
                 gc.fillOval(px - 8, py - 8, 16, 16);
                 gc.setStroke(Color.WHITE);
-                gc.setLineWidth(2);
+                gc.setLineWidth(1);
                 gc.strokeOval(px - 8, py - 8, 16, 16);
             }
-            if (zoom >= 3) {
+            if (rotular) {
                 dibujarEtiqueta(gc, evento.nombre(), px + 11, py + 5, FONT_PUNTO, ocupadas, false);
             }
         }
@@ -1272,7 +1390,7 @@ public class LuisYMapaRutasCanvas extends Pane {
         gc.setFill(Color.DODGERBLUE);
         gc.fillOval(px - radio, py - radio, radio * 2, radio * 2);
         gc.setStroke(Color.WHITE);
-        gc.setLineWidth(1.4);
+        gc.setLineWidth(1);
         gc.strokeOval(px - radio, py - radio, radio * 2, radio * 2);
         gc.setFill(Color.WHITE);
         gc.setFont(FONT_CLUSTER);
@@ -1308,11 +1426,11 @@ public class LuisYMapaRutasCanvas extends Pane {
         gc.setFill(Color.GOLD);
         gc.fillPolygon(xs, ys, 3);
         gc.setStroke(Color.RED);
-        gc.setLineWidth(3);
+        gc.setLineWidth(1);
         gc.setLineJoin(StrokeLineJoin.ROUND);
         gc.strokePolygon(xs, ys, 3);
         gc.setStroke(Color.web("#7a0000"));
-        gc.setLineWidth(2.2);
+        gc.setLineWidth(1);
         gc.strokeLine(px, py - 5, px, py + 2);
         gc.fillOval(px - 1.4, py + 4, 2.8, 2.8);
         gc.setGlobalAlpha(1.0);
@@ -1353,6 +1471,8 @@ public class LuisYMapaRutasCanvas extends Pane {
     }
 
     private static final int MAX_SEMAFOROS_DIBUJADOS = 2_000;
+    /** Con aros de 4 arcos cada uno, bastan estos por fotograma. */
+    private static final int MAX_SEMAFOROS_ARCOS = 400;
 
     /** Aro rojo/amarillo/verde pequeño en cada semáforo visible (solo con zoom cercano). */
     private void dibujarSemaforos(GraphicsContext gc) {
@@ -1368,7 +1488,7 @@ public class LuisYMapaRutasCanvas extends Pane {
             int medio = (desde + hasta) >>> 1;
             if (nodos.get(medio).x < xMin) desde = medio + 1; else hasta = medio;
         }
-        gc.setLineWidth(1.6);
+        gc.setLineWidth(1);
         int dibujados = 0;
         for (int i = desde; i < nodos.size() && dibujados < MAX_SEMAFOROS_DIBUJADOS; i++) {
             PieroGNodo nodo = nodos.get(i);
@@ -1376,6 +1496,14 @@ public class LuisYMapaRutasCanvas extends Pane {
             EberthMSemaforo semaforo = nodo.semaforo;
             double py = pantallaY(nodo.y);
             if (semaforo == null || !estaEnPantalla(pantallaX(nodo.x), py, 5, 5)) continue;
+            if (zoom <= ZOOM_CERCANO) {
+                // Zoom medio: un punto de 3x3 con la luz del eje horizontal.
+                gc.setFill(colorLuz(nodo, semaforo, EberthMSemaforo.Eje.HORIZONTAL));
+                gc.fillRect(pantallaX(nodo.x) - 1.5, py - 1.5, 3, 3);
+                dibujados++;
+                continue;
+            }
+            if (dibujados >= MAX_SEMAFOROS_ARCOS) break;
             // Cada mitad del aro muestra una fase: izquierda/derecha = accesos horizontales,
             // arriba/abajo = verticales.
             double sx = pantallaX(nodo.x) - 3;
@@ -1416,18 +1544,32 @@ public class LuisYMapaRutasCanvas extends Pane {
     private void dibujarPasajerosEnParadas(GraphicsContext gc) {
         if (zoom < 6.0 || paradasEnEspera.isEmpty()) return;
         double w = canvas.getWidth(), h = canvas.getHeight();
+        // Lejano y medio (o modo ligero): un cuadrito por parada, todos del mismo color y sin texto;
+        // miles de óvalos por fotograma eran lo que más tardaba.
+        if (zoom < ZOOM_CERCANO || modoLigero) {
+            gc.setFill(COLOR_PARADA_ESPERA);
+            for (EberthMParadaEspera parada : paradasEnEspera) {
+                double px = pantallaX(parada.x()), py = pantallaY(parada.y());
+                if (px < -6 || py < -6 || px > w + 6 || py > h + 6) continue;
+                double lado = parada.esperando() > 30 ? 5 : 3;
+                gc.fillRect(px - lado / 2, py - lado / 2, lado, lado);
+            }
+            return;
+        }
         gc.setFont(FONT_VEHICULO);
+        int circulos = 0;
         for (EberthMParadaEspera parada : paradasEnEspera) {
             double px = pantallaX(parada.x()), py = pantallaY(parada.y());
             if (px < -20 || py < -20 || px > w + 20 || py > h + 20) continue;
+            if (++circulos > MAX_PARADAS_CIRCULO) break;
             double radio = Math.min(12, 6 + Math.sqrt(parada.esperando()) * 0.5);
-            gc.setFill(Color.STEELBLUE.deriveColor(0, 1, 1, 0.85));
+            gc.setFill(COLOR_PARADA_ESPERA);
             gc.fillOval(px - radio, py - radio - 10, radio * 2, radio * 2);
             gc.setFill(Color.WHITE);
             gc.fillText(LuisYFormatoCantidad.abreviar(parada.esperando()), px - radio * 0.6, py - 10 + 3);
             if (parada.transbordo() > 0) {
                 // Segundo viaje: círculo morado con los pasajeros que esperan su transbordo.
-                gc.setFill(Color.MEDIUMPURPLE.deriveColor(0, 1, 1, 0.95));
+                gc.setFill(COLOR_PARADA_TRANSBORDO);
                 gc.fillOval(px + radio * 0.4, py - radio - 14, 12, 12);
                 gc.setFill(Color.WHITE);
                 gc.fillText(LuisYFormatoCantidad.abreviar(parada.transbordo()), px + radio * 0.4 + 2, py - radio - 4);
@@ -1439,13 +1581,17 @@ public class LuisYMapaRutasCanvas extends Pane {
     private void dibujarCaminantes(GraphicsContext gc) {
         if (zoom < 6.0 || caminantes.length == 0) return;
         double w = canvas.getWidth(), h = canvas.getHeight();
-        for (int i = 0; i + 2 < caminantes.length; i += 3) {
-            double px = pantallaX(caminantes[i]), py = pantallaY(caminantes[i + 1]);
-            if (px < -4 || py < -4 || px > w + 4 || py > h + 4) continue;
-            boolean transbordo = caminantes[i + 2] > 0;
+        // Dos pasadas (un pincel por color) y cuadritos en lugar de óvalos.
+        for (int pasada = 0; pasada < 2; pasada++) {
+            boolean transbordo = pasada == 1;
             gc.setFill(transbordo ? Color.MEDIUMPURPLE : Color.ORANGE);
-            double r = transbordo ? 2.5 : 1.5;
-            gc.fillOval(px - r, py - r, r * 2, r * 2);
+            double lado = transbordo ? 5 : 3;
+            for (int i = 0; i + 2 < caminantes.length; i += 3) {
+                if ((caminantes[i + 2] > 0) != transbordo) continue;
+                double px = pantallaX(caminantes[i]), py = pantallaY(caminantes[i + 1]);
+                if (px < -4 || py < -4 || px > w + 4 || py > h + 4) continue;
+                gc.fillRect(px - lado / 2, py - lado / 2, lado, lado);
+            }
         }
     }
 
@@ -1492,10 +1638,10 @@ public class LuisYMapaRutasCanvas extends Pane {
     private final Map<Color, LoteVehiculos> lotesVehiculos = new java.util.IdentityHashMap<>();
 
     private void dibujarVehiculos(GraphicsContext gc) {
-        if (zoom <= ZOOM_CERCANO) {
-            // Zoom lejano: 1 px sin borde; zoom medio: 4x4. Sin formas ni etiquetas. Se agrupan por
-            // color y se pintan por lotes: cientos de micros sin cambiar de pincel en cada uno.
-            double lado = zoom < ZOOM_LEJANO ? 1 : 4;
+        if (zoom < ZOOM_FORMA_MICRO) {
+            // Lejano: punto de 1 px; medio: 2x2; cercano: 4x4 (con rótulo en sobrecupo). Se agrupan
+            // por color y se pintan por lotes: cientos de micros sin cambiar de pincel en cada uno.
+            double lado = zoom < ZOOM_LEJANO ? 1 : zoom < ZOOM_CERCANO ? 2 : 4;
             lotesVehiculos.values().forEach(l -> l.n = 0);
             int visibles = 0;
             for (EberthMPosicionVehiculo vehiculo : vehiculos) {
@@ -1512,6 +1658,7 @@ public class LuisYMapaRutasCanvas extends Pane {
                 for (int i = 0; i < l.n; i += 2) gc.fillRect(l.xy[i], l.xy[i + 1], lado, lado);
             }
             vehiculosVisibles = visibles;
+            if (zoom >= ZOOM_CERCANO) dibujarRotulosMicros(gc);
             return;
         }
         int etiquetasDibujadas = 0;
@@ -1549,6 +1696,26 @@ public class LuisYMapaRutasCanvas extends Pane {
             }
         }
         vehiculosVisibles = visibles;
+    }
+
+    /** Zoom cercano: rótulo solo de los micros con sobrecupo, como mucho 80 por fotograma. */
+    private void dibujarRotulosMicros(GraphicsContext gc) {
+        int dibujados = 0;
+        gc.setFont(FONT_VEHICULO);
+        for (EberthMPosicionVehiculo vehiculo : vehiculos) {
+            if (dibujados >= 80) break;
+            if (vehiculo.tipo() != EberthMPosicionVehiculo.TipoVehiculo.MINIBUS
+                    || vehiculo.pasajeros() <= EberthMPosicionVehiculo.ASIENTOS_MICRO) continue;
+            double px = pantallaX(vehiculo.x()), py = pantallaY(vehiculo.y());
+            if (!estaEnPantalla(px, py, 4, 4)) continue;
+            String texto = vehiculo.nombreRuta() + " · " + vehiculo.pasajeros() + " pax";
+            gc.setStroke(colorHalo);
+            gc.setLineWidth(3);
+            gc.strokeText(texto, px + 8, py - 4);
+            gc.setFill(Color.RED);
+            gc.fillText(texto, px + 8, py - 4);
+            dibujados++;
+        }
     }
 
     private void prepararAgrupacionVehiculos() {
@@ -1646,25 +1813,82 @@ public class LuisYMapaRutasCanvas extends Pane {
     // ==================================================================
 
     private void aplicarNivelZoom(int nuevoNivel, double cx, double cy) {
-        double nuevoZoom = ZOOMS[nuevoNivel];
+        aplicarZoom(ZOOMS[nuevoNivel], nuevoNivel, cx, cy);
+    }
+
+    private void aplicarZoom(double nuevoZoom, int indiceZoom, double cx, double cy) {
         offsetX = cx - (cx - offsetX) * (nuevoZoom / zoom);
         offsetY = cy - (cy - offsetY) * (nuevoZoom / zoom);
         zoom = nuevoZoom;
-        nivelZoom = nuevoNivel;
+        nivelZoom = indiceZoom;
         redibujarMapa();
     }
 
-    public void zoomIn() {
-        if (!cargado) return;
-        int n = Math.min(nivelZoom + 1, ZOOMS.length - 1);
-        if (n != nivelZoom) aplicarNivelZoom(n, canvas.getWidth() / 2, canvas.getHeight() / 2);
+    /** Cantidad de niveles de zoom de los botones. */
+    public static int totalNivelesLod() { return ZOOM_POR_NIVEL_LOD.length; }
+
+    /** Nivel de detalle más cercano al zoom actual (1 = lejano). */
+    public int getNivelLod() {
+        int nivel = 1;
+        for (int i = 1; i < ZOOM_POR_NIVEL_LOD.length; i++) {
+            if (zoom * 1.2 >= ZOOM_POR_NIVEL_LOD[i]) nivel = i + 1;
+        }
+        return nivel;
     }
 
+    /** Salta al siguiente nivel de detalle (más cerca). Sin efecto en el último. */
+    public void zoomIn() {
+        if (!cargado) return;
+        for (int i = 0; i < ZOOM_POR_NIVEL_LOD.length; i++) {
+            if (ZOOM_POR_NIVEL_LOD[i] > zoom * 1.01) { saltarANivelLod(i + 1); return; }
+        }
+    }
+
+    /** Salta al nivel de detalle anterior (más lejos). Sin efecto en el primero. */
     public void zoomOut() {
         if (!cargado) return;
-        int n = Math.max(nivelZoom - 1, 0);
-        if (n != nivelZoom) aplicarNivelZoom(n, canvas.getWidth() / 2, canvas.getHeight() / 2);
+        for (int i = ZOOM_POR_NIVEL_LOD.length - 1; i >= 0; i--) {
+            if (ZOOM_POR_NIVEL_LOD[i] < zoom / 1.01) { saltarANivelLod(i + 1); return; }
+        }
     }
+
+    private void saltarANivelLod(int nivel) {
+        double objetivo = ZOOM_POR_NIVEL_LOD[nivel - 1];
+        int indice = 0;
+        for (int i = 0; i < ZOOMS.length; i++) {
+            if (Math.abs(ZOOMS[i] - objetivo) < Math.abs(ZOOMS[indice] - objetivo)) indice = i;
+        }
+        aplicarZoom(ZOOMS[indice], indice, canvas.getWidth() / 2, canvas.getHeight() / 2);
+    }
+
+    public boolean isZoomConRueda() { return zoomConRueda; }
+
+    public void setZoomConRueda(boolean activo) {
+        zoomConRueda = activo;
+        redibujarMapa();
+    }
+
+    public boolean isArrastrarConClicIzquierdo() { return arrastrarConClicIzquierdo; }
+
+    public void setArrastrarConClicIzquierdo(boolean activo) {
+        arrastrarConClicIzquierdo = activo;
+        actualizarCursor();
+    }
+
+    public boolean isModoMano() { return modoMano; }
+
+    public void setModoMano(boolean activo) {
+        modoMano = activo;
+        actualizarCursor();
+    }
+
+    private void actualizarCursor() {
+        setCursor(modoMano || arrastrarConClicIzquierdo ? javafx.scene.Cursor.OPEN_HAND
+                : javafx.scene.Cursor.DEFAULT);
+    }
+
+    /** Avisa (en el hilo de JavaFX) cuando cambia el nivel de detalle: 1, 2 o 3. */
+    public void setOnNivelLod(java.util.function.IntConsumer cb) { onNivelLod = cb; }
 
     public void resetVistaPublico() { resetVista(); }
 
@@ -2003,7 +2227,7 @@ public class LuisYMapaRutasCanvas extends Pane {
 
     /** Marca de agua de zona: gris muy tenue, en vertical. */
     private void dibujarNombresZonas(GraphicsContext gc) {
-        if (zonas.isEmpty()) return;
+        if (zonas.isEmpty() || zoom <= ZOOM_CERCANO) return; // sin textos con zoom lejano/medio
         for (ZonaCroquis zona : zonas) {
             gc.save();
             gc.translate(pantallaX(lonANormX(zona.lon())), pantallaY(latANormY(zona.lat())));
@@ -2019,6 +2243,8 @@ public class LuisYMapaRutasCanvas extends Pane {
 
     /** Leyenda: barra horizontal en la esquina inferior izquierda. */
     private void dibujarLeyenda(GraphicsContext gc) {
+        // Es texto: solo con zoom cercano (y así no se mide texto en cada fotograma).
+        if (zoom < ZOOM_CERCANO) return;
         List<String> textos = new ArrayList<>();
         List<Color> colores = new ArrayList<>();
         List<Boolean> discontinuas = new ArrayList<>();

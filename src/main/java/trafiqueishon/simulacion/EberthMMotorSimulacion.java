@@ -30,6 +30,11 @@ public final class EberthMMotorSimulacion implements AutoCloseable {
     /** Frecuencia del paso de simulación (independiente de los FPS del render). */
     public static final int PASOS_POR_SEGUNDO = 30;
 
+    /** Segundos simulados máximos que avanza un solo tick: a x40 el hilo calcula ~40 ticks por segundo. */
+    static final double MAX_SEGUNDOS_SIMULADOS_POR_TICK = 1.0;
+    /** Presupuesto de un paso del reloj: si se agota, se omiten ticks (la simulación va más lenta, no se acumula). */
+    static final long PRESUPUESTO_PASO_NANOS = 60_000_000L;
+
     /** Foto inmutable del estado de la simulación. */
     public record Instantanea(List<EberthMPosicionVehiculo> vehiculos, boolean ejecutando,
                               boolean haySimulacion, int horaMinutos, double segundosSimulados,
@@ -148,7 +153,16 @@ public final class EberthMMotorSimulacion implements AutoCloseable {
             }
             double delta = Math.min(1.0, (ahora - ultimoPasoNanos) / 1_000_000_000.0);
             ultimoPasoNanos = ahora;
-            simulador.avanzar(delta);
+            // A velocidad alta el paso se parte en ticks de ≤ 1 s simulado (los vehículos no «saltan»
+            // tramos). El render solo ve la foto publicada al final de todos los ticks.
+            int ticks = (int) Math.clamp(
+                    Math.ceil(delta * simulador.getVelocidadSimulacion() / MAX_SEGUNDOS_SIMULADOS_POR_TICK),
+                    1, 64);
+            double deltaTick = delta / ticks;
+            for (int i = 0; i < ticks; i++) {
+                simulador.avanzar(deltaTick);
+                if (System.nanoTime() - ahora > PRESUPUESTO_PASO_NANOS) break;
+            }
             publicar();
         } catch (Throwable t) {
             // Un paso fallido nunca debe matar el hilo programado.

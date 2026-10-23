@@ -100,3 +100,16 @@
   1 o 4 px); las ruedas (óvalos) solo con zoom ≥ 25. La gente de la demanda usa rectángulos.
 - El plan del autogenerador admite hasta **50 rutas** (`MAX_RUTAS_PLAN`); el contador de cobertura
   del diálogo sale del plan real (`coberturaAcumulada`).
+
+## Optimización para Lima · Fases 1 y 2
+- Sección «Rutas y Micros» unificada: lista de rutas, vista Ida/Vuelta compacta (combo + interruptor + 2 casillas) y micros de la ruta elegida (refresco 1 s solo con la sección abierta).
+- Lluvia en color sólido translúcido (sin `RadialGradient`); bordes de 1 px; no había `DropShadow`.
+- Capa estática de calles con `setCache(true)` + `CacheHint.SPEED`; márgenes de culling al 5 %.
+- LOD: < 5 micros de 1 px y rutas de 1 px, sin semáforos/eventos/textos; 5–15 micros 3x3, semáforos como puntos, sin textos; > 15 todo.
+- Solo se dibujan los 10 eventos más cercanos al centro de la cámara.
+
+## Optimización para Lima · Fases 3 y 4
+- `EberthMMotorSimulacion`: el paso del reloj se parte en ticks de ≤ 1 s simulado (a x40, ~40 ticks/s) con un presupuesto de 60 ms por paso; el `AnimationTimer` solo lee la última foto. Velocidad máxima 40x.
+- Barra de estado con FPS reales (pulsos de JavaFX, `System.nanoTime`, cada 0,5 s).
+- Botón «Modo Estrés» (panel Simulación): eventos orgánicos + hora punta + x40 + Lima si existe; mide 10 s y avisa «¡Prueba superada!» con > 20 FPS.
+- Pulse logger: `mvn javafx:run -Dapp.pulse=true` (o `java -Djavafx.pulseLogger=true …`).

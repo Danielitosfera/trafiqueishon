@@ -20,6 +20,18 @@ public final class EberthMDespachador {
     private int unidadesDespachadas;
     private double proximoDespacho;
     private boolean salidaRetrasada;
+    private double ultimaSalida;
+    /** Pasajeros esperando en las paradas de la ruta; -1 = sin dato (rige solo la frecuencia fija). */
+    private int pasajerosEsperando = -1;
+
+    /** Con menos gente esperando que esto no se envía una unidad vacía (salvo pasado el tope). */
+    public static final int POCA_GENTE = 3;
+    /** Con tanta gente esperando, la siguiente unidad sale sin aguardar la frecuencia normal. */
+    public static final int MUCHA_GENTE = 60;
+    /** Frecuencia más corta que impone la demanda alta. */
+    public static final double INTERVALO_MINIMO_DINAMICO_SEGUNDOS = 2 * 60;
+    /** Intervalo más largo por poca demanda: pasado este tiempo la unidad sale aunque vaya vacía. */
+    public static final double INTERVALO_MAXIMO_DINAMICO_SEGUNDOS = 15 * 60;
 
     /** Tope de espera por una vía saturada; pasado ese tiempo la unidad sale igualmente. */
     public static final double ESPERA_MAXIMA_SATURACION_SEGUNDOS = 600;
@@ -73,7 +85,21 @@ public final class EberthMDespachador {
     public Optional<Salida> siguienteSalida(double segundosTranscurridos, double multiplicadorDemanda,
                                             boolean horaPunta,
                                             java.util.function.Predicate<Boolean> rutaLibre) {
-        if (terminado() || proximoDespacho > segundosTranscurridos) return Optional.empty();
+        if (terminado()) return Optional.empty();
+        boolean dinamica = pasajerosEsperando >= 0 && unidadesDespachadas >= 2;
+        if (proximoDespacho > segundosTranscurridos) {
+            // Mucha gente esperando: sale antes de la frecuencia normal (cada 2 min como mínimo).
+            if (!dinamica || pasajerosEsperando < MUCHA_GENTE
+                    || segundosTranscurridos - ultimaSalida < INTERVALO_MINIMO_DINAMICO_SEGUNDOS) {
+                return Optional.empty();
+            }
+            proximoDespacho = segundosTranscurridos;
+        } else if (dinamica && pasajerosEsperando < POCA_GENTE
+                && segundosTranscurridos - ultimaSalida < INTERVALO_MAXIMO_DINAMICO_SEGUNDOS) {
+            // Casi nadie espera: no se envía un micro vacío; el intervalo crece hasta 15 min.
+            salidaRetrasada = true;
+            return Optional.empty();
+        }
         boolean saleDelFinal = servicio.tieneRetorno() && unidadesDespachadas % 2 == 1;
         if (segundosTranscurridos - proximoDespacho < ESPERA_MAXIMA_SATURACION_SEGUNDOS
                 && !rutaLibre.test(saleDelFinal)) {
@@ -84,6 +110,7 @@ public final class EberthMDespachador {
             proximoDespacho = segundosTranscurridos;
             salidaRetrasada = false;
         }
+        ultimaSalida = segundosTranscurridos;
         int abordados = demanda.abordarEnSalida(multiplicadorDemanda);
         Salida salida = new Salida(unidadesDespachadas, saleDelFinal, abordados);
         unidadesDespachadas++;
@@ -92,6 +119,14 @@ public final class EberthMDespachador {
             proximoDespacho += frecuenciaVigenteMinutos(horaPunta) * 60.0;
         }
         return Optional.of(salida);
+    }
+
+    /**
+     * Pasajeros esperando en las paradas de esta ruta. Con este dato las salidas se adaptan solas
+     * (ver {@link #MUCHA_GENTE} y {@link #POCA_GENTE}); con -1 solo rige la frecuencia fija.
+     */
+    public void setPasajerosEsperando(int pasajeros) {
+        this.pasajerosEsperando = pasajeros;
     }
 
     /** Frecuencia de salida vigente: la de hora punta o la normal. */

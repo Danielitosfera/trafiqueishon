@@ -182,4 +182,39 @@ class EberthMDespachadorTest {
         assertEquals(7, servicio(10, 4, 100).frecuenciaPuntaMinutos());
         assertEquals(1, servicio(1, 4, 100).frecuenciaPuntaMinutos());
     }
+
+    @Test
+    void sinNadieEsperandoNoSaleUnMicroVacioHastaElTopeDeQuinceMinutos() {
+        EberthMDespachador d = new EberthMDespachador(servicio(1, 6, 0));
+        d.siguienteSalida(0, MINUTO, false);
+        d.siguienteSalida(0, MINUTO, false);
+        d.setPasajerosEsperando(0);
+
+        assertTrue(d.siguienteSalida(60, MINUTO, false).isEmpty());
+        assertTrue(d.siguienteSalida(899, MINUTO, false).isEmpty());
+        assertTrue(d.siguienteSalida(900, MINUTO, false).isPresent());
+    }
+
+    @Test
+    void conMuchaGenteEsperandoSaleCadaDosMinutosAunqueLaFrecuenciaSeaMayor() {
+        EberthMDespachador d = new EberthMDespachador(servicio(15, 6, 0));
+        d.siguienteSalida(0, MINUTO, false);
+        d.siguienteSalida(0, MINUTO, false);
+        d.setPasajerosEsperando(EberthMDespachador.MUCHA_GENTE);
+
+        assertTrue(d.siguienteSalida(119, MINUTO, false).isEmpty());
+        assertTrue(d.siguienteSalida(120, MINUTO, false).isPresent());
+        assertTrue(d.siguienteSalida(200, MINUTO, false).isEmpty());
+        assertTrue(d.siguienteSalida(240, MINUTO, false).isPresent());
+    }
+
+    @Test
+    void sinDatoDeEsperaRigeLaFrecuenciaFija() {
+        EberthMDespachador d = new EberthMDespachador(servicio(10, 6, 0));
+        d.siguienteSalida(0, MINUTO, false);
+        d.siguienteSalida(0, MINUTO, false);
+
+        assertTrue(d.siguienteSalida(599, MINUTO, false).isEmpty());
+        assertTrue(d.siguienteSalida(600, MINUTO, false).isPresent());
+    }
 }

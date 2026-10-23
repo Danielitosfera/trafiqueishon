@@ -21,6 +21,8 @@
         <junit.version>5.10.2</junit.version>
         <!-- Memoria de la app. Para Lima: mvn javafx:run -Dapp.xmx=2g -->
         <app.xmx>768m</app.xmx>
+        <!-- Diagnóstico de fotogramas lentos: mvn javafx:run -Dapp.pulse=true -->
+        <app.pulse>false</app.pulse>
     </properties>
 
     <dependencies>
@@ -90,6 +92,7 @@
                         <option>-Xmx${app.xmx}</option>
                         <option>-XX:+UseG1GC</option>
                         <option>-Dprism.order=es2,sw</option>
+                        <option>-Djavafx.pulseLogger=${app.pulse}</option>
                     </options>
                 </configuration>
             </plugin>

@@ -1,6 +1,9 @@
 package trafiqueishon.ui;
 
 import javafx.animation.AnimationTimer;
+import javafx.animation.KeyFrame;
+import javafx.animation.Timeline;
+import javafx.util.Duration;
 import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
@@ -84,6 +87,8 @@ public class LuisYVentanaPrincipal {
             Preferences.userNodeForPackage(LuisYVentanaPrincipal.class);
     private static final String PREFERENCIA_TEMA_CLARO = "tema-claro";
     private static final String PREFERENCIA_ESTADISTICAS_OCULTAS = "estadisticas-ocultas";
+    private static final String PREFERENCIA_ZOOM_RUEDA = "mapa-zoom-rueda";
+    private static final String PREFERENCIA_ARRASTRE_CLIC = "mapa-arrastre-clic";
     private static final String PREFERENCIA_CIUDAD = "ciudad";
 
     // ===== Infraestructura de la ventana =====
@@ -115,7 +120,17 @@ public class LuisYVentanaPrincipal {
     private final ListView<String> listaTrayectos = new ListView<>();
     private final VBox filasRutasMicros = new VBox(6);
     private final ComboBox<EberthMServicioMicro> selectorMicro = new ComboBox<>();
-    private final ToggleButton btnModoIdaVuelta = new ToggleButton("Modo Ida / Vuelta");
+    private final ToggleButton btnModoIdaVuelta = new ToggleButton("⇄ Activar");
+    private final ListView<String> listaMicros = new ListView<>();
+    private final ToggleButton btnMano = new ToggleButton("✋");
+    private final Label lblNivelLod = new Label("Nivel 1/" + LuisYMapaRutasCanvas.totalNivelesLod());
+    private final TextField busquedaRutas = new TextField();
+    private final TextField busquedaMicros = new TextField();
+    private final Label lblResumenMicros = new Label();
+    private final Label lblFps = new Label("FPS: --");
+    private volatile double fpsActual;
+    private Timeline pruebaEstres;
+    private Timeline refrescoMicros;
     private final CheckBox chkIda = new CheckBox("Ida (azul)");
     private final CheckBox chkVuelta = new CheckBox("Vuelta (roja)");
 
@@ -278,12 +293,19 @@ public class LuisYVentanaPrincipal {
         aplicarClaseTema();
         mapa.setTemaClaro(temaClaro);
         StackPane.setAlignment(panelParadas, Pos.TOP_RIGHT);
-        StackPane.setMargin(panelParadas, new Insets(12));
         StackPane.setAlignment(estadisticasFlotante, Pos.TOP_LEFT);
         StackPane.setMargin(estadisticasFlotante, new Insets(12));
+        HBox controlesZoom = crearControlesZoom();
+        StackPane.setAlignment(controlesZoom, Pos.TOP_RIGHT);
+        StackPane.setMargin(controlesZoom, new Insets(12));
+        // El panel de paradas baja para no quedar bajo los controles del mapa.
+        StackPane.setMargin(panelParadas, new Insets(58, 12, 12, 12));
         StackPane.setAlignment(leyendaFlotante, Pos.BOTTOM_RIGHT);
         StackPane.setMargin(leyendaFlotante, new Insets(12));
-        capaCentral.getChildren().addAll(vistaCroquis, panelParadas, estadisticasFlotante, leyendaFlotante);
+        capaCentral.getChildren().addAll(vistaCroquis, panelParadas, estadisticasFlotante,
+                leyendaFlotante, controlesZoom);
+        mapa.setZoomConRueda(PREFERENCIAS.getBoolean(PREFERENCIA_ZOOM_RUEDA, false));
+        mapa.setArrastrarConClicIzquierdo(PREFERENCIAS.getBoolean(PREFERENCIA_ARRASTRE_CLIC, false));
         actualizarVisibilidadEstadisticas();
         root.setCenter(capaCentral);
 
@@ -299,14 +321,76 @@ public class LuisYVentanaPrincipal {
         root.addEventFilter(KeyEvent.KEY_PRESSED, this::manejarAtajos);
     }
 
+    /** Botones − / + (saltan entre los niveles de detalle) y la «mano» para arrastrar el mapa. */
+    private HBox crearControlesZoom() {
+        Button mas = botonCompacto("+", mapa::zoomIn);
+        Button menos = botonCompacto("−", mapa::zoomOut);
+        mas.setTooltip(new Tooltip("Acercar (siguiente nivel de detalle)"));
+        menos.setTooltip(new Tooltip("Alejar (nivel de detalle anterior)"));
+        btnMano.setTooltip(new Tooltip("Mano: arrastra el mapa con el clic izquierdo"));
+        btnMano.getStyleClass().add("boton-compacto");
+        btnMano.setOnAction(e -> mapa.setModoMano(btnMano.isSelected()));
+        lblNivelLod.getStyleClass().add("texto-secundario");
+        mapa.setOnNivelLod(nivel -> lblNivelLod.setText(
+                "Nivel " + nivel + "/" + LuisYMapaRutasCanvas.totalNivelesLod()));
+        HBox caja = new HBox(6, btnMano, menos, lblNivelLod, mas);
+        caja.setAlignment(Pos.CENTER);
+        caja.setPickOnBounds(false);
+        caja.getStyleClass().add("panel-estadisticas");
+        caja.setPadding(new Insets(6, 8, 6, 8));
+        caja.setMaxSize(Region.USE_PREF_SIZE, Region.USE_PREF_SIZE);
+        return caja;
+    }
+
+    /** Submenú Vistas → Controles del Mapa (modo clásico: rueda y arrastre con clic izquierdo). */
+    private Menu crearMenuControlesMapa() {
+        CheckMenuItem rueda = new CheckMenuItem("Zoom con rueda del ratón");
+        rueda.setSelected(mapa.isZoomConRueda());
+        rueda.setOnAction(e -> {
+            if (rueda.isSelected()) {
+                Alert aviso = new Alert(Alert.AlertType.CONFIRMATION,
+                        "El zoom libre con la rueda redibuja el mapa en cada paso y puede causar lag, "
+                                + "sobre todo con muchos micros o eventos.\n\n¿Activarlo de todos modos?",
+                        ButtonType.YES, ButtonType.NO);
+                aviso.setTitle("Zoom con rueda");
+                aviso.setHeaderText("Advertencia de rendimiento");
+                if (aviso.showAndWait().orElse(ButtonType.NO) != ButtonType.YES) {
+                    rueda.setSelected(false);
+                    return;
+                }
+            }
+            mapa.setZoomConRueda(rueda.isSelected());
+            PREFERENCIAS.putBoolean(PREFERENCIA_ZOOM_RUEDA, rueda.isSelected());
+        });
+        CheckMenuItem arrastre = new CheckMenuItem("Arrastrar mapa con clic izquierdo");
+        arrastre.setSelected(mapa.isArrastrarConClicIzquierdo());
+        arrastre.setOnAction(e -> {
+            mapa.setArrastrarConClicIzquierdo(arrastre.isSelected());
+            PREFERENCIAS.putBoolean(PREFERENCIA_ARRASTRE_CLIC, arrastre.isSelected());
+        });
+        return new Menu("Controles del Mapa", null, rueda, arrastre);
+    }
+
     private void configurarCallbacks() {
         chkIda.setSelected(true);
         chkVuelta.setSelected(true);
         chkIda.setOnAction(e -> ejecutarSeguro("sentidos", this::actualizarVisualizacionRutas));
         chkVuelta.setOnAction(e -> ejecutarSeguro("sentidos", this::actualizarVisualizacionRutas));
         btnModoIdaVuelta.setOnAction(e -> ejecutarSeguro("modo ida/vuelta", this::alternarModoIdaVuelta));
-        selectorMicro.valueProperty().addListener((o, a, b) ->
-                ejecutarSeguro("seleccionar micro", this::actualizarVisualizacionRutas));
+        btnModoIdaVuelta.getStyleClass().add("toggle-destacado");
+        btnModoIdaVuelta.setTooltip(new Tooltip("Muestra solo la ida (azul) y vuelta (roja) de la ruta "
+                + "seleccionada y oculta las demás"));
+        selectorMicro.valueProperty().addListener((o, a, b) -> {
+            if (actualizandoSelectorMicro) {
+                ejecutarSeguro("seleccionar ruta", this::actualizarVisualizacionRutas);
+                return;
+            }
+            ejecutarSeguro("seleccionar ruta", () -> {
+                actualizarFilasRutasMicro();
+                actualizarVisualizacionRutas();
+                actualizarListaMicros();
+            });
+        });
         chkMapaCalor.setOnAction(e -> ejecutarSeguro("mapa de calor",
                 () -> mapa.setMostrarCalor(chkMapaCalor.isSelected())));
         chkCroquis.setSelected(true);
@@ -359,7 +443,7 @@ public class LuisYVentanaPrincipal {
             actualizarDemandaActual(motor.instantanea().haySimulacion()
                         ? motor.instantanea().horaMinutos() : horaInicio.getValue() * 60 + minutoInicio.getValue());
         });
-        velocidadSimulacion.getItems().setAll(0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0);
+        velocidadSimulacion.getItems().setAll(0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 40.0);
         velocidadSimulacion.setPrefWidth(95);
         velocidadSimulacion.getSelectionModel().select(Double.valueOf(1.0));
         velocidadSimulacion.valueProperty().addListener((o, a, valor) -> {
@@ -380,6 +464,10 @@ public class LuisYVentanaPrincipal {
             lblInfoMapa.setText(msg);
         });
         mapa.setOnInfoMapa(lblInfoVista::setText);
+        mapa.setOnFps(fps -> {
+            fpsActual = fps;
+            lblFps.setText(String.format(Locale.ROOT, "FPS: %.0f", fps));
+        });
         mapa.setOnClic(this::procesarClicMapa);
         mapa.setOnDobleClic(this::procesarDobleClicMapa);
         // Al salir del panel Eventos se desarma el evento elegido: no se coloca por accidente.
@@ -462,7 +550,7 @@ public class LuisYVentanaPrincipal {
         Region espacio = new Region();
         HBox.setHgrow(espacio, Priority.ALWAYS);
 
-        // Solo lo esencial; vista y zoom (rueda del ratón) viven en el panel lateral y los menús.
+        // Solo lo esencial; la vista vive en el panel lateral y los menús; el zoom, en los botones del mapa.
         controles.getChildren().addAll(
                 titulo,
                 new Separator(Orientation.VERTICAL),
@@ -530,6 +618,8 @@ public class LuisYVentanaPrincipal {
                     actualizarVisibilidadEstadisticas();
                 }),
                 new SeparatorMenuItem(),
+                crearMenuControlesMapa(),
+                new SeparatorMenuItem(),
                 item("Modo presentación (F11)", this::alternarPresentacion),
                 new SeparatorMenuItem(),
                 oscuro, claro);
@@ -570,14 +660,24 @@ public class LuisYVentanaPrincipal {
 
     private ScrollPane crearPanelLateral() {
         TitledPane mapas = seccion("🗺  Mapas", crearSeccionMapas());
-        TitledPane rutas = seccion("🛣  Rutas y Micros", crearSeccionRutas());
+        TitledPane rutas = seccion("🛣  Rutas", crearSeccionRutas());
+        TitledPane idaVuelta = seccion("⇄  Ida / Vuelta", crearSeccionIdaVuelta());
+        // El refresco de la lista de micros solo corre con esta sección abierta.
+        rutas.expandedProperty().addListener((o, antes, abierto) -> {
+            if (abierto) {
+                actualizarListaMicros();
+                refrescoMicros.play();
+            } else {
+                refrescoMicros.stop();
+            }
+        });
         TitledPane pois = seccion("📍  Puntos de Interés", crearSeccionPuntos());
         TitledPane ciudad = seccion("🏙  Configuración de Ciudad", crearSeccionConfiguracionCiudad());
         TitledPane simulacion = seccion("▶  Simulación", crearSeccionSimulacion());
         panelEventos = seccion("⚡  Eventos", crearSeccionEventos());
         TitledPane eventosPane = panelEventos;
         TitledPane exportar = seccion("⬇  Exportar", crearSeccionExportar());
-        acordeon.getPanes().addAll(mapas, rutas, pois, ciudad, simulacion, eventosPane, exportar);
+        acordeon.getPanes().addAll(mapas, rutas, idaVuelta, pois, ciudad, simulacion, eventosPane, exportar);
         pois.setExpanded(false);
         acordeon.setExpandedPane(rutas);
 
@@ -653,8 +753,8 @@ public class LuisYVentanaPrincipal {
                         + "cantidad; los nombres aparecen al acercarse y nunca se enciman."));
     }
 
+    /** Sección «Rutas»: buscador y lista de rutas arriba; los micros de la elegida abajo. */
     private VBox crearSeccionRutas() {
-        // --- Micros con checkboxes (vista múltiple)
         HBox accionesMicros = new HBox(6,
                 boton("➕ Crear ruta", this::crearRutaMicro),
                 botonCompacto("🤖 Autogenerar Rutas", this::autogenerarRutasMicro),
@@ -662,32 +762,50 @@ public class LuisYVentanaPrincipal {
                 botonCompacto("Ninguna", () -> marcarTodasLasMicros(false)));
         HBox.setHgrow(accionesMicros.getChildren().getFirst(), Priority.ALWAYS);
 
-        // --- Ida / Vuelta
-        selectorMicro.setMaxWidth(Double.MAX_VALUE);
-        selectorMicro.setPromptText("Elige una micro…");
-        selectorMicro.setCellFactory(l -> celdaMicro());
-        selectorMicro.setButtonCell(celdaMicro());
-        btnModoIdaVuelta.setMaxWidth(Double.MAX_VALUE);
-        btnModoIdaVuelta.getStyleClass().add("toggle-destacado");
-        HBox sentidos = new HBox(14, chkIda, chkVuelta);
-
-        // --- Trayectos con todos los puntos
         listaTrayectos.setPlaceholder(new Label("Sin trayectos calculados."));
         listaTrayectos.setPrefHeight(90);
 
+        Button btnRecalcular = boton("🔄 Recalcular Rutas y Frecuencias", this::recalcularRutasYFrecuencias);
+        btnRecalcular.setMaxWidth(Double.MAX_VALUE);
+        btnRecalcular.setMinHeight(40);
+        btnRecalcular.getStyleClass().add("toggle-destacado");
+        btnRecalcular.setTooltip(new Tooltip("Crea rutas para las zonas sin cobertura, espacia las rutas "
+                + "casi vacías (< 20 %) y refuerza las saturadas (> 80 %)"));
+
+        busquedaRutas.setPromptText("Buscar ruta...");
+        busquedaRutas.textProperty().addListener((o, a, texto) ->
+                ejecutarSeguro("buscar ruta", this::repintarFilasRutas));
+        ScrollPane scrollRutas = new ScrollPane(filasRutasMicros);
+        scrollRutas.setFitToWidth(true);
+        scrollRutas.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        scrollRutas.setPrefHeight(280);
+        scrollRutas.setMinHeight(120);
+        scrollRutas.getStyleClass().add("scroll-rutas");
+
+        busquedaMicros.setPromptText("Buscar micro...");
+        busquedaMicros.textProperty().addListener((o, a, texto) ->
+                ejecutarSeguro("buscar micro", this::actualizarListaMicros));
+        lblResumenMicros.setWrapText(true);
+        lblResumenMicros.getStyleClass().add("texto-secundario");
+        listaMicros.setPlaceholder(new Label("Elige una ruta y inicia la simulación."));
+        listaMicros.setPrefHeight(MICROS_VISIBLES * 28 + 6);
+        listaMicros.setMinHeight(MICROS_VISIBLES * 28 + 6);
+        refrescoMicros = new Timeline(new KeyFrame(Duration.seconds(1),
+                e -> actualizarListaMicros()));
+        refrescoMicros.setCycleCount(Timeline.INDEFINITE);
+
         actualizarFilasRutasMicro();
         return new VBox(10,
-                subtitulo("Micros · marca las que quieres ver"),
+                subtitulo("Rutas · marca las que quieres ver, haz clic para elegir una"),
                 accionesMicros,
-                filasRutasMicros,
+                btnRecalcular,
+                busquedaRutas,
+                scrollRutas,
                 new Separator(),
-                subtitulo("Vista Ida / Vuelta de una micro"),
-                ayuda("Limpia el mapa y muestra solo la micro elegida: ida en azul, "
-                        + "vuelta en rojo, con flechas de sentido."),
-                selectorMicro,
-                btnModoIdaVuelta,
-                sentidos,
-                boton("Enfocar ruta seleccionada", this::enfocarSeleccion),
+                subtitulo("Micros de la ruta seleccionada"),
+                lblResumenMicros,
+                busquedaMicros,
+                listaMicros,
                 new Separator(),
                 subtitulo("Trayecto que recorre todos los puntos"),
                 rejillaBotones(
@@ -695,6 +813,62 @@ public class LuisYVentanaPrincipal {
                         boton("Calcular RETORNO", () -> calcular("RETORNO"))),
                 listaTrayectos,
                 boton("Limpiar trayectos", this::limpiarTrayectos));
+    }
+
+    /** Sección «Ida / Vuelta»: ruta a inspeccionar, sentidos visibles y encuadre. */
+    private VBox crearSeccionIdaVuelta() {
+        selectorMicro.setMaxWidth(Double.MAX_VALUE);
+        selectorMicro.setPromptText("Elige una ruta…");
+        selectorMicro.setCellFactory(l -> celdaMicro());
+        selectorMicro.setButtonCell(celdaMicro());
+        HBox.setHgrow(selectorMicro, Priority.ALWAYS);
+        HBox seleccion = new HBox(8, selectorMicro, btnModoIdaVuelta);
+        seleccion.setAlignment(Pos.CENTER_LEFT);
+        HBox sentidos = new HBox(14, chkIda, chkVuelta);
+        return new VBox(10,
+                subtitulo("Vista Ida / Vuelta"),
+                seleccion,
+                sentidos,
+                boton("Enfocar ruta seleccionada", this::enfocarSeleccion),
+                ayuda("«Activar» muestra solo la ida (azul) y la vuelta (roja) de la ruta elegida."));
+    }
+
+    private static final int MAX_FILAS_MICROS = 300;
+    /** Micros que se listan sin búsqueda: el resto se encuentra con el buscador. */
+    private static final int MICROS_VISIBLES = 3;
+
+    /** Rellena la lista con los micros de la ruta elegida según la última foto del motor. */
+    private void actualizarListaMicros() {
+        EberthMServicioMicro ruta = selectorMicro.getValue();
+        if (ruta == null) {
+            lblResumenMicros.setText("");
+            listaMicros.getItems().clear();
+            return;
+        }
+        String consulta = busquedaMicros.getText() == null ? ""
+                : busquedaMicros.getText().strip().toLowerCase(Locale.ROOT);
+        int limite = consulta.isEmpty() ? MICROS_VISIBLES : MAX_FILAS_MICROS;
+        List<String> filas = new ArrayList<>();
+        int total = 0;
+        int coincidencias = 0;
+        for (EberthMPosicionVehiculo v : motor.instantanea().vehiculos()) {
+            if (!ruta.id().equals(v.idRuta())) continue;
+            total++;
+            String fila = String.format(Locale.ROOT, "Micro %d · %s · %d/%d pasajeros",
+                    total, v.estado().name().replace('_', ' ').toLowerCase(Locale.ROOT),
+                    v.pasajeros(), v.capacidad());
+            if (!consulta.isEmpty() && !fila.toLowerCase(Locale.ROOT).contains(consulta)) continue;
+            coincidencias++;
+            if (filas.size() < limite) filas.add(fila);
+        }
+        if (coincidencias > filas.size()) {
+            filas.add("… y " + (coincidencias - filas.size()) + " más"
+                    + (consulta.isEmpty() ? " (usa el buscador)" : ""));
+        }
+        lblResumenMicros.setText(String.format(Locale.ROOT,
+                "%s · cada %d min · %d micros asignados · %d en circulación",
+                ruta.nombre(), ruta.frecuenciaMinutos(), ruta.unidadesDisponibles(), total));
+        listaMicros.getItems().setAll(filas);
     }
 
     private static final double ZOOM_PUNTO_SELECCIONADO = 48;
@@ -1004,6 +1178,9 @@ public class LuisYVentanaPrincipal {
                 new Separator(),
                 subtitulo("Ecosistema"),
                 chkEventosOrganicos,
+                boton("🔥 Modo Estrés (x40 · Lima)", this::iniciarPruebaEstres),
+                ayuda("Activa todos los eventos orgánicos y la hora punta, pone la velocidad en x40, "
+                        + "carga Lima si el mapa está disponible y mide los FPS durante 10 s."),
                 ayuda("Cada minuto simulado se sortea un evento con los parámetros de "
                         + "«Configuración de Ciudad»: hora punta triplica las trancaderas, la tasa "
                         + "de accidentes fija los choques y la probabilidad de lluvia abre "
@@ -1119,7 +1296,10 @@ public class LuisYVentanaPrincipal {
                 ayuda("Solo la micro seleccionada: ida azul, vuelta roja y sus paraderos."),
                 new Separator(),
                 subtitulo("Otros formatos"),
-                boton("GeoJSON, GPX, CSV, TXT o PDF por micro…", this::exportarRutas));
+                boton("GeoJSON, GPX, CSV, TXT o PDF por micro…", this::exportarRutas),
+                boton("Exportar Rutas con Eventos", this::exportarRutasConEventos),
+                ayuda("JSON con las rutas (ida y vuelta), los eventos activos con sus coordenadas "
+                        + "y las estadísticas del momento."));
     }
 
     private void alternarPanelLateral() {
@@ -1660,6 +1840,75 @@ public class LuisYVentanaPrincipal {
         }
     }
 
+    private static final double FPS_MINIMO_PRUEBA = 20;
+    private static final int SEGUNDOS_CALENTAMIENTO = 3;
+    private static final int SEGUNDOS_MEDICION = 10;
+
+    /**
+     * Prueba de estrés: eventos orgánicos + hora punta + x40 sobre Lima (si existe su mapa) y,
+     * tras esperar la carga, mide los FPS. Si el promedio supera {@value #FPS_MINIMO_PRUEBA}, avisa.
+     */
+    private void iniciarPruebaEstres() {
+        if (pruebaEstres != null) {
+            pruebaEstres.stop();
+            pruebaEstres = null;
+        }
+        chkEventosOrganicos.setSelected(true);
+        toggleHoraPunta.setSelected(true);
+        velocidadSimulacion.setValue(40.0);
+        boolean lima = fuenteMapa.existe(PieroGCiudadMapa.LIMA, BetoHFuenteMapa.CALLES);
+        if (lima && !PieroGCiudadMapa.LIMA.equals(ciudadActual)) {
+            selectorCiudad.setValue(PieroGCiudadMapa.LIMA);
+        } else if (!lima) {
+            lblEstado.setText("Modo Estrés: no hay mapa de Lima (ver Ayuda); se prueba con "
+                    + (ciudadActual == null ? "el mapa actual" : ciudadActual.nombre()) + ".");
+        }
+        double[] acumulado = new double[3]; // suma, muestras, mínimo
+        acumulado[2] = Double.MAX_VALUE;
+        int[] fase = {0, 0}; // [fase, segundos en la fase]
+        pruebaEstres = new Timeline(new KeyFrame(Duration.millis(500), e -> {
+            if (cargandoMapa || trabajosEnCurso > 0) return;
+            if (fase[0] == 0) { // listo: arrancar la simulación
+                if (rutasMicros.isEmpty()) {
+                    pruebaEstres.stop();
+                    lblEstado.setText("Modo Estrés: no hay rutas. Usa «Autogenerar Rutas» y repite.");
+                    return;
+                }
+                if (!motor.instantanea().ejecutando()) iniciarOReanudarSimulacion();
+                fase[0] = 1;
+                fase[1] = 0;
+                return;
+            }
+            fase[1]++;
+            if (fase[0] == 1) {
+                lblEstado.setText("Modo Estrés: calentando…");
+                if (fase[1] >= SEGUNDOS_CALENTAMIENTO * 2) { fase[0] = 2; fase[1] = 0; }
+                return;
+            }
+            double fps = fpsActual;
+            acumulado[0] += fps;
+            acumulado[1]++;
+            acumulado[2] = Math.min(acumulado[2], fps);
+            lblEstado.setText(String.format(Locale.ROOT, "Modo Estrés: midiendo… %.0f FPS", fps));
+            if (fase[1] < SEGUNDOS_MEDICION * 2) return;
+            pruebaEstres.stop();
+            double promedio = acumulado[0] / acumulado[1];
+            boolean superada = promedio > FPS_MINIMO_PRUEBA;
+            String mensaje = String.format(Locale.ROOT,
+                    "FPS promedio: %.1f · mínimo: %.1f · micros: %d · x40", promedio, acumulado[2],
+                    motor.instantanea().vehiculos().size());
+            lblEstado.setText((superada ? "¡Prueba superada! " : "Prueba no superada. ") + mensaje);
+            Alert alerta = new Alert(superada ? Alert.AlertType.INFORMATION : Alert.AlertType.WARNING,
+                    mensaje, ButtonType.OK);
+            estilizarDialogo(alerta);
+            alerta.setTitle("Modo Estrés");
+            alerta.setHeaderText(superada ? "¡Prueba superada!" : "Prueba no superada (menos de 20 FPS)");
+            alerta.show();
+        }));
+        pruebaEstres.setCycleCount(Timeline.INDEFINITE);
+        pruebaEstres.play();
+    }
+
     private void pausarSimulacion() {
         motor.ejecutar(EberthMSimuladorBuses::pausar);
         lblEstado.setText("Simulación pausada.");
@@ -1949,6 +2198,119 @@ public class LuisYVentanaPrincipal {
         });
     }
 
+    /**
+     * Recalcula la oferta con la demanda y la ocupación actuales: ajusta frecuencia y unidades de las
+     * rutas vacías o saturadas (con los micros en circulación) y genera rutas para la demanda sin cobertura.
+     */
+    private void recalcularRutasYFrecuencias() {
+        if (grafo == null || puntos.size() < 2) {
+            lblEstado.setText("Carga el mapa y al menos dos puntos de interés antes de recalcular.");
+            return;
+        }
+        List<EberthMServicioMicro> actuales = List.copyOf(rutasMicros);
+        EberthMRecalculadorRutas.Resultado ajuste = EberthMRecalculadorRutas.ajustar(
+                actuales, motor.instantanea().vehiculos(), EberthMSimuladorBuses.MAX_UNIDADES);
+        PieroGGrafoVial red = grafo;
+        List<LuisYPuntoImportante> pois = List.copyOf(puntos);
+        EberthMParametrosCiudad ciudad = parametrosCiudad == null ? null : parametrosCiudad.copia();
+        EberthMTipoDia dia = selectorTipoDia.getValue() == null ? EberthMTipoDia.LABORAL : selectorTipoDia.getValue();
+        EberthMDemandaCiudad demandaPrevia = demandaCiudad;
+        List<EberthMPoi> poisDemanda = puntos.stream()
+                .filter(p -> ES_POI.contains(p.tipo()))
+                .map(p -> new EberthMPoi(p.nombre(), p.lon(), p.lat(), EberthMCategoriaPoi.desde(p.tipo())))
+                .toList();
+        enSegundoPlano("Recalculando rutas y frecuencias", () -> {
+            EberthMDemandaCiudad demanda = demandaPrevia;
+            if (demanda == null && ciudad != null && !poisDemanda.isEmpty()) {
+                try {
+                    demanda = EberthMDemandaCiudad.generar(red, poisDemanda, ciudad, dia);
+                } catch (IllegalArgumentException ex) {
+                    LOG.log(Level.FINE, "Sin demanda para recalcular", ex);
+                }
+            }
+            int frecuencia = EberthMGeneradorRutas.frecuenciaPorCiudad(ciudad);
+            EberthMGeneradorRutas.Opciones opciones = new EberthMGeneradorRutas.Opciones(1, 5, 0, frecuencia,
+                    EberthMServicioMicro.frecuenciaPuntaPorDefecto(frecuencia),
+                    EberthMGeneradorRutas.COBERTURA_OBJETIVO, EberthMGeneradorRutas.TiposRuta.AMBAS);
+            EberthMGeneradorRutas generador = new EberthMGeneradorRutas(red, pois, ciudad,
+                    new java.util.Random());
+            List<EberthMServicioMicro> base = ajuste.rutas();
+            List<EberthMServicioMicro> nuevas = List.of();
+            if (demanda != null) {
+                // Zonas con demanda sin ruta cercana: solo se generan si la cobertura no llega al objetivo.
+                double cobertura = base.isEmpty() ? 0
+                        : EberthMCoberturaDemanda.evaluar(demanda, base).porcentaje();
+                if (cobertura < EberthMGeneradorRutas.COBERTURA_OBJETIVO) {
+                    nuevas = generador.generarDesdeDemanda(demanda, base, opciones);
+                }
+            } else {
+                try {
+                    double[] zonas = motor.calcular(EberthMSimuladorBuses::zonasSinCoberturaLonLat).join();
+                    if (zonas != null && zonas.length > 0) {
+                        generador.priorizarZonasSinCobertura(zonas);
+                        nuevas = generador.generar(base, opciones.conRutas(1));
+                    }
+                } catch (RuntimeException ex) {
+                    LOG.log(Level.FINE, "Sin zonas sin cobertura para recalcular", ex);
+                }
+            }
+            return new Object[]{demanda, nuevas};
+        }, resultado -> {
+            @SuppressWarnings("unchecked")
+            List<EberthMServicioMicro> nuevas = (List<EberthMServicioMicro>) resultado[1];
+            EberthMDemandaCiudad demanda = (EberthMDemandaCiudad) resultado[0];
+            for (EberthMServicioMicro ajustada : ajuste.rutas()) {
+                int idx = EberthMGestorServicios.indiceDe(rutasMicros, ajustada.id());
+                if (idx >= 0) rutasMicros.set(idx, ajustada);
+            }
+            int creadas = 0;
+            for (EberthMServicioMicro servicio : nuevas) {
+                if (EberthMGestorServicios.flotaExcedida(rutasMicros, servicio)) break;
+                rutasMicros.add(servicio);
+                rutasMicrosVisibles.add(servicio.id());
+                gestor.agregar(servicio.trayecto());
+                creadas++;
+            }
+            if (demanda != null) demandaCiudad = demanda;
+            boolean enMarcha = motor.instantanea().haySimulacion();
+            if (!ajuste.ajustes().isEmpty() && enMarcha) {
+                List<EberthMServicioMicro> copia = List.copyOf(rutasMicros);
+                motor.ejecutar(sim -> sim.actualizarServicios(copia));
+            }
+            actualizarFilasRutasMicro();
+            actualizarVisualizacionRutas();
+            guardarRutasMicros();
+            actualizarCoberturaDemanda();
+            String cobertura = demanda == null ? "sin datos"
+                    : String.format(java.util.Locale.ROOT, "%.0f %%", EberthMCoberturaDemanda.evaluar(
+                    demanda, List.copyOf(rutasMicros)).porcentaje() * 100);
+            String resumen = String.format(java.util.Locale.ROOT,
+                    "Se crearon %d rutas nuevas. Se ajustaron %d frecuencias. Cobertura actual: %s.",
+                    creadas, ajuste.ajustes().size(), cobertura);
+            lblEstado.setText(resumen);
+            mostrarResumenRecalculo(resumen, ajuste.ajustes(), creadas > 0 && enMarcha);
+        });
+    }
+
+    private void mostrarResumenRecalculo(String resumen, List<EberthMRecalculadorRutas.Ajuste> ajustes,
+                                         boolean avisarReinicio) {
+        StringBuilder detalle = new StringBuilder(resumen);
+        for (EberthMRecalculadorRutas.Ajuste a : ajustes) {
+            detalle.append(String.format(java.util.Locale.ROOT,
+                    "%n%s %s · ocupación %.0f %% · cada %d → %d min · %d → %d micros",
+                    a.aumenta() ? "▲" : "▼", a.nombre(), a.ocupacion() * 100, a.frecuenciaAntes(),
+                    a.frecuenciaDespues(), a.unidadesAntes(), a.unidadesDespues()));
+        }
+        if (avisarReinicio) {
+            detalle.append("\n\nLas rutas nuevas salen en la simulación al reiniciarla (↺).");
+        }
+        Alert info = new Alert(Alert.AlertType.INFORMATION, detalle.toString());
+        estilizarDialogo(info);
+        info.setTitle("Recalcular rutas");
+        info.setHeaderText("Recálculo terminado");
+        info.show();
+    }
+
     /** Paso 4: «Se generaron X rutas. Cobertura alcanzada: Y %»; con menos del 50 % sale además la alerta de cobertura. */
     private void anunciarRutasGeneradas(EberthMDemandaCiudad demanda, int generadas) {
         if (demanda == null) {
@@ -2007,12 +2369,26 @@ public class LuisYVentanaPrincipal {
             selectorMicro.setValue(idSeleccion == null ? null : rutasMicros.stream()
                     .filter(r -> r.id().equals(idSeleccion)).findFirst().orElse(null));
         });
+        actualizarListaMicros();
+        repintarFilasRutas();
+    }
+
+    /** Redibuja la lista de rutas aplicando el buscador; no toca la selección. */
+    private void repintarFilasRutas() {
+        filasRutasMicros.getChildren().clear();
+        EberthMServicioMicro seleccion = selectorMicro.getValue();
+        String idSeleccion = seleccion == null ? null : seleccion.id();
         if (rutasMicros.isEmpty()) {
             filasRutasMicros.getChildren().add(ayuda("No hay rutas de micro definidas. "
                     + "Crea una con «Crear ruta»."));
             return;
         }
+        String consulta = busquedaRutas.getText() == null ? ""
+                : busquedaRutas.getText().strip().toLowerCase(Locale.ROOT);
+        boolean hayCoincidencias = false;
         for (EberthMServicioMicro ruta : rutasMicros) {
+            if (!consulta.isEmpty() && !ruta.nombre().toLowerCase(Locale.ROOT).contains(consulta)) continue;
+            hayCoincidencias = true;
             CheckBox visible = new CheckBox();
             visible.setSelected(rutasMicrosVisibles.contains(ruta.id()));
             visible.setTooltip(new Tooltip("Mostrar en la vista múltiple"));
@@ -2038,12 +2414,6 @@ public class LuisYVentanaPrincipal {
             recorrido.setWrapText(true);
             recorrido.getStyleClass().addAll("texto-secundario", "micro-recorrido");
 
-            Button idaVuelta = botonCompacto("⇄", () -> {
-                selectorMicro.setValue(ruta);
-                btnModoIdaVuelta.setSelected(true);
-                alternarModoIdaVuelta();
-            });
-            idaVuelta.setTooltip(new Tooltip("Ver solo su ida (azul) y vuelta (roja)"));
             Button editar = botonCompacto("✎", () -> editarRutaMicro(ruta));
             editar.setTooltip(new Tooltip("Editar ruta"));
             Button eliminar = botonCompacto("✕", () -> eliminarRutaMicro(ruta));
@@ -2052,15 +2422,17 @@ public class LuisYVentanaPrincipal {
             HBox cabecera = new HBox(8, visible, muestra, nombre);
             cabecera.setAlignment(Pos.CENTER_LEFT);
             VBox info = new VBox(3, cabecera, detalle, recorrido);
-            HBox fila = new HBox(6, info, idaVuelta, editar, eliminar);
+            HBox fila = new HBox(6, info, editar, eliminar);
             fila.setAlignment(Pos.CENTER_LEFT);
             fila.getStyleClass().add("fila-micro");
-            if (ruta.id().equals(idSeleccion) && btnModoIdaVuelta.isSelected()) {
-                fila.getStyleClass().add("fila-micro-activa");
-            }
+            if (ruta.id().equals(idSeleccion)) fila.getStyleClass().add("fila-micro-activa");
+            fila.setOnMouseClicked(e -> {
+                if (e.isStillSincePress()) selectorMicro.setValue(ruta);
+            });
             HBox.setHgrow(info, Priority.ALWAYS);
             filasRutasMicros.getChildren().add(fila);
         }
+        if (!hayCoincidencias) filasRutasMicros.getChildren().add(ayuda("Ninguna ruta coincide con la búsqueda."));
     }
 
     private boolean actualizandoSelectorMicro;
@@ -2150,7 +2522,7 @@ public class LuisYVentanaPrincipal {
                 selectorMicro.setValue(visibles.getFirst());
             } else {
                 btnModoIdaVuelta.setSelected(false);
-                lblEstado.setText("Elige primero una micro para ver su ida y vuelta.");
+                lblEstado.setText("Elige primero una ruta (clic en la lista) para ver su ida y vuelta.");
                 return;
             }
         }
@@ -2861,6 +3233,33 @@ public class LuisYVentanaPrincipal {
         }, ruta -> lblEstado.setText("PDF individual exportado: " + ruta));
     }
 
+    private void exportarRutasConEventos() {
+        if (rutasMicros.isEmpty()) {
+            lblEstado.setText("No hay rutas de micro para exportar.");
+            return;
+        }
+        var ventana = root.getScene() == null ? null : root.getScene().getWindow();
+        File elegido = LuisYSelectorArchivos.guardar(ventana, "Exportar rutas con eventos",
+                List.of(LuisYSelectorArchivos.filtro("JSON (*.json)", "*.json")), null,
+                "rutas-con-eventos-" + (ciudadActual == null ? "ciudad" : ciudadActual.id()) + ".json",
+                this::estilizarDialogo);
+        if (elegido == null) return;
+        Path destino = asegurarExtension(elegido.toPath(), "json");
+        List<EberthMServicioMicro> rutas = List.copyOf(rutasMicros);
+        List<EberthMEventoTrafico> activos = List.copyOf(eventos);
+        EberthMMotorSimulacion.Instantanea foto = motor.instantanea();
+        String ciudad = ciudadActual == null ? "" : ciudadActual.nombre();
+        enSegundoPlano("Exportando rutas con eventos", () -> {
+            try {
+                new DanielTExportadorRutasEventos().exportar(ciudad, rutas, activos, foto, destino);
+            } catch (IOException ex) {
+                throw new java.io.UncheckedIOException(ex);
+            }
+            return destino;
+        }, escrito -> lblEstado.setText("Exportadas " + rutas.size() + " rutas y " + activos.size()
+                + " eventos en " + escrito));
+    }
+
     private void exportarRutas() {
         List<OpcionExportacion> opciones = opcionesExportables();
         if (opciones.isEmpty()) {
@@ -3269,6 +3668,8 @@ public class LuisYVentanaPrincipal {
         lblCoords.getStyleClass().addAll("status-item", "texto-secundario");
         lblZoom.getStyleClass().addAll("status-item", "texto-secundario");
         lblInfoVista.getStyleClass().addAll("status-item", "texto-secundario");
+        lblFps.getStyleClass().add("status-item");
+        lblFps.setMinWidth(70);
 
         Region esp = new Region();
         HBox.setHgrow(esp, Priority.ALWAYS);
@@ -3277,6 +3678,8 @@ public class LuisYVentanaPrincipal {
                 progreso,
                 lblEstado,
                 esp,
+                lblFps,
+                new Separator(Orientation.VERTICAL),
                 lblInfoVista,
                 new Separator(Orientation.VERTICAL),
                 lblCoords,
@@ -3297,6 +3700,8 @@ public class LuisYVentanaPrincipal {
         try {
             relojUi.stop();
         } catch (Throwable ignored) { }
+        if (pruebaEstres != null) pruebaEstres.stop();
+        if (refrescoMicros != null) refrescoMicros.stop();
         try {
             motor.close();
         } catch (Throwable ignored) { }

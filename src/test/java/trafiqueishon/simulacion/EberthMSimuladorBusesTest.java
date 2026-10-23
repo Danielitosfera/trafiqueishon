@@ -44,8 +44,8 @@ class EberthMSimuladorBusesTest {
     void rechazaVelocidadFueraDelRangoPermitido() {
         EberthMSimuladorBuses simulador = new EberthMSimuladorBuses();
         assertThrows(IllegalArgumentException.class,
-                () -> simulador.setVelocidadSimulacion(31));
-        assertDoesNotThrow(() -> simulador.setVelocidadSimulacion(30));
+                () -> simulador.setVelocidadSimulacion(41));
+        assertDoesNotThrow(() -> simulador.setVelocidadSimulacion(40));
     }
 
     @Test

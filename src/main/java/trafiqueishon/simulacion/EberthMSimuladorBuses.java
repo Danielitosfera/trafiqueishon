@@ -679,6 +679,12 @@ public final class EberthMSimuladorBuses {
             EberthMDespachador despachador = despacho.despachador;
             EberthMServicioMicro servicio = despachador.servicio();
             try {
+                // Frecuencia dinámica automática: la gente que espera en sus paradas decide el ritmo.
+                if (!despachador.terminado()) {
+                    // Sin parámetros de ciudad no hay demanda real: rige solo la frecuencia fija.
+                    despachador.setPasajerosEsperando(demandaParadas.perfilCiudad == null ? -1
+                            : demandaParadas.esperandoEn(despacho.paradasIda, despacho.paradasVuelta));
+                }
                 Optional<EberthMDespachador.Salida> pendiente;
                 while ((pendiente = despachador.siguienteSalida(
                         segundosTranscurridos, multiplicadorDemandaActual(), esHoraPuntaDemanda(),
@@ -790,8 +796,8 @@ public final class EberthMSimuladorBuses {
 
     public void setVelocidadSimulacion(double velocidadSimulacion) {
         if (!Double.isFinite(velocidadSimulacion)
-                || velocidadSimulacion < 0.5 || velocidadSimulacion > 30) {
-            throw new IllegalArgumentException("La velocidad debe estar entre 0.5x y 30x.");
+                || velocidadSimulacion < 0.5 || velocidadSimulacion > 40) {
+            throw new IllegalArgumentException("La velocidad debe estar entre 0.5x y 40x.");
         }
         this.velocidadSimulacion = velocidadSimulacion;
         aplicarEscalaSemaforos();
@@ -2033,6 +2039,21 @@ public final class EberthMSimuladorBuses {
             int n = abordadosSinContar;
             abordadosSinContar = 0;
             return n;
+        }
+
+        /** Pasajeros esperando en las paradas de una ruta (el mayor de los dos sentidos). */
+        int esperandoEn(List<PieroGNodo> ida, List<PieroGNodo> vuelta) {
+            return Math.max(esperandoEn(ida), esperandoEn(vuelta));
+        }
+
+        private int esperandoEn(List<PieroGNodo> paradas) {
+            if (paradas == null) return 0;
+            int suma = 0;
+            for (PieroGNodo parada : paradas) {
+                ColaEspera cola = esperando.get(parada.id);
+                if (cola != null) suma += cola.total;
+            }
+            return suma;
         }
 
         List<EberthMParadaEspera> instantanea() {
